@@ -105,7 +105,7 @@ export const mcpTools = [
     // Task Operations (with todo/completed status)
     {
         name: "plan_task",
-        description: "Plan a new task with optional sub-items.",
+        description: "Plan a new task in my memory with optional sub-items.",
         inputSchema: {
             type: "object",
             properties: {
@@ -132,7 +132,7 @@ export const mcpTools = [
     },
     {
         name: "update_task",
-        description: "Update a task including marking as completed or updating sub-items.",
+        description: "Update a task in my memory including marking as completed or updating sub-items.",
         inputSchema: {
             type: "object",
             properties: {
@@ -158,7 +158,7 @@ export const mcpTools = [
     },
     {
         name: "add_subtask",
-        description: "Add a sub-item to a task.",
+        description: "Add a sub-item to my memory of a task.",
         inputSchema: {
             type: "object",
             properties: {
@@ -183,7 +183,7 @@ export const mcpTools = [
     },
     {
         name: "complete_subtask",
-        description: "Mark a specific sub-item as completed.",
+        description: "Mark a specific sub-item as completed in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -210,7 +210,7 @@ export const mcpTools = [
     },
     {
         name: "complete_task",
-        description: "Mark a task as completed.",
+        description: "Mark a task as completed in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -229,7 +229,7 @@ export const mcpTools = [
     },
     {
         name: "forget_task",
-        description: "Remove a task from my memory.",
+        description: "Remove a task from my memory completely.",
         inputSchema: {
             type: "object",
             properties: {
@@ -291,7 +291,7 @@ export const mcpTools = [
     // Workflow Operations
     {
         name: "plan_workflow",
-        description: "Plan a multi-step workflow in my memory.",
+        description: "Plan a multi-step workflow in my memory to follow.",
         inputSchema: {
             type: "object",
             properties: {
@@ -380,7 +380,7 @@ export const mcpTools = [
     // Knowledge Operations
     {
         name: "remember_keypoint",
-        description: "Remember an important keypoint or highlight.",
+        description: "Remember an important keypoint or highlight in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -428,7 +428,7 @@ export const mcpTools = [
     },
     {
         name: "remember_note",
-        description: "Remember a general note.",
+        description: "Remember a general note in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -451,7 +451,7 @@ export const mcpTools = [
     },
     {
         name: "remember_discovery",
-        description: "Remember a new discovery or finding.",
+        description: "Remember a new discovery or finding in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -476,7 +476,7 @@ export const mcpTools = [
     // Learning and Issue Tracking
     {
         name: "remember_mistake",
-        description: "Remember a mistake or failure to learn from.",
+        description: "Remember a mistake or failure in my memory to learn from.",
         inputSchema: {
             type: "object",
             properties: {
@@ -501,7 +501,7 @@ export const mcpTools = [
     },
     {
         name: "remember_learning",
-        description: "Remember a lesson learned or insight.",
+        description: "Remember a lesson learned or insight in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -525,7 +525,7 @@ export const mcpTools = [
     },
     {
         name: "remember_boundary",
-        description: "Remember a scope boundary for a task.",
+        description: "Remember a scope boundary for a task in my memory.",
         inputSchema: {
             type: "object",
             properties: {
