@@ -427,8 +427,8 @@ export const mcpTools = [
         },
     },
     {
-        name: "add_note",
-        description: "Add a general note to my memory.",
+        name: "remember_note",
+        description: "Remember a general note.",
         inputSchema: {
             type: "object",
             properties: {
