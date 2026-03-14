@@ -39,9 +39,14 @@ const ALL_TOOLS: any[] = [
 // V6 Hardening: Fatal fail immediately if Environment configuration is corrupted
 validateEnv();
 
+// Configurable tool prefix (defaults to "memory" for backwards compatibility)
+// Set TOOL_PREFIX env var to change (e.g., "my_memory" → my_memory_tool_search)
+const TOOL_PREFIX = process.env.TOOL_PREFIX || 'memory';
+const SEARCH_TOOL_NAME = `${TOOL_PREFIX}_tool_search`;
+
 // Inject the search tool at the beginning (it must NOT be deferred)
 ALL_TOOLS.unshift({
-    name: 'memory_tool_search',
+    name: SEARCH_TOOL_NAME,
     description: '[meta] Search for available tools by keyword. Use this when you need a specific capability. Returns names, descriptions and full schemas for matching tools.',
     inputSchema: {
         type: 'object',
@@ -53,7 +58,7 @@ ALL_TOOLS.unshift({
 });
 
 async function run() {
-    console.error("Starting Memory MCP...");
+    console.error(`Starting Memory MCP (prefix: ${TOOL_PREFIX})...`);
 
     // Initialize SQLite Database
     initSqlite();
@@ -73,7 +78,7 @@ async function run() {
         const enableDeferLoading = process.env.ENABLE_DEFER_LOADING !== 'false';
 
         const tools = enableDeferLoading
-            ? ALL_TOOLS.filter(t => t.name === 'memory_tool_search')
+            ? ALL_TOOLS.filter(t => t.name === SEARCH_TOOL_NAME)
             : ALL_TOOLS;
 
         // Ensure we map the inputSchema correctly for the Server API response
@@ -90,7 +95,7 @@ async function run() {
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { name, arguments: args } = request.params;
 
-        if (name === 'memory_tool_search') {
+        if (name === SEARCH_TOOL_NAME) {
             const query = String((args as any)?.query || '').toLowerCase();
 
             const results = ALL_TOOLS.filter((t: any) =>
