@@ -104,8 +104,8 @@ export const mcpTools = [
 
     // Task Operations (with todo/completed status)
     {
-        name: "create_task",
-        description: "Create a new task with optional sub-todos.",
+        name: "plan_task",
+        description: "Plan a new task with optional sub-items.",
         inputSchema: {
             type: "object",
             properties: {
@@ -115,7 +115,7 @@ export const mcpTools = [
                 description: { type: "string", description: "Task description" },
                 status: { type: "string", description: "Status: pending, in_progress, completed", default: "pending" },
                 priority: { type: "string", description: "Priority: low, medium, high", default: "medium" },
-                todos: { type: "array", description: "Array of todos: [{text: string, status: 'pending'|'completed'}]" },
+                todos: { type: "array", description: "Array of sub-items: [{text: string, status: 'pending'|'completed'}]" },
                 metadata: { type: "object", description: "Additional metadata" }
             },
             required: ["projectId", "userId", "title"],
@@ -124,7 +124,7 @@ export const mcpTools = [
             try {
                 const { projectId, userId, title, description = '', status = 'pending', priority = 'medium', todos = [], metadata = {} } = args;
                 const task = createTask(projectId, userId, title, description, status, priority, todos, metadata);
-                return { content: [{ type: "text", text: `Task created: ${JSON.stringify(task)}` }] };
+                return { content: [{ type: "text", text: `Task planned: ${JSON.stringify(task)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -132,7 +132,7 @@ export const mcpTools = [
     },
     {
         name: "update_task",
-        description: "Update a task including marking as completed or updating todos.",
+        description: "Update a task including marking as completed or updating sub-items.",
         inputSchema: {
             type: "object",
             properties: {
@@ -141,7 +141,7 @@ export const mcpTools = [
                 description: { type: "string", description: "New description" },
                 status: { type: "string", description: "Status: pending, in_progress, completed" },
                 priority: { type: "string", description: "Priority: low, medium, high" },
-                todos: { type: "array", description: "Array of todos: [{text, status}]" },
+                todos: { type: "array", description: "Array of sub-items: [{text, status}]" },
                 metadata: { type: "object", description: "Updated metadata" }
             },
             required: ["id"],
@@ -157,13 +157,13 @@ export const mcpTools = [
         },
     },
     {
-        name: "add_todo_to_task",
-        description: "Add a sub-todo to a task.",
+        name: "add_subtask",
+        description: "Add a sub-item to a task.",
         inputSchema: {
             type: "object",
             properties: {
                 taskId: { type: "string", description: "Task ID" },
-                text: { type: "string", description: "Todo text" },
+                text: { type: "string", description: "Sub-task text" },
                 status: { type: "string", description: "Status: pending, completed", default: "pending" }
             },
             required: ["taskId", "text"],
@@ -175,34 +175,34 @@ export const mcpTools = [
                 const todos = task.todos || [];
                 todos.push({ text: args.text, status: args.status || 'pending' });
                 const updated = updateTask(args.taskId, { todos });
-                return { content: [{ type: "text", text: `Todo added: ${JSON.stringify(updated?.todos)}` }] };
+                return { content: [{ type: "text", text: `Sub-task added: ${JSON.stringify(updated?.todos)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         },
     },
     {
-        name: "complete_todo",
-        description: "Mark a specific sub-todo as completed.",
+        name: "complete_subtask",
+        description: "Mark a specific sub-item as completed.",
         inputSchema: {
             type: "object",
             properties: {
                 taskId: { type: "string", description: "Task ID" },
-                todoIndex: { type: "number", description: "Index of the todo to mark complete (0-based)" }
+                subtaskIndex: { type: "number", description: "Index of the sub-item to mark complete (0-based)" }
             },
-            required: ["taskId", "todoIndex"],
+            required: ["taskId", "subtaskIndex"],
         },
         handler: async (args: any) => {
             try {
                 const task = getTask(args.taskId);
                 if (!task) return { isError: true, content: [{ type: "text", text: "Task not found" }] };
                 const todos = task.todos || [];
-                if (todos[args.todoIndex]) {
-                    todos[args.todoIndex].status = 'completed';
+                if (todos[args.subtaskIndex]) {
+                    todos[args.subtaskIndex].status = 'completed';
                     updateTask(args.taskId, { todos });
-                    return { content: [{ type: "text", text: `Todo marked as completed` }] };
+                    return { content: [{ type: "text", text: `Sub-task marked as completed` }] };
                 }
-                return { isError: true, content: [{ type: "text", text: "Todo index not found" }] };
+                return { isError: true, content: [{ type: "text", text: "Sub-task index not found" }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -228,8 +228,8 @@ export const mcpTools = [
         },
     },
     {
-        name: "delete_task",
-        description: "Delete a task by ID.",
+        name: "forget_task",
+        description: "Remove a task from my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -240,15 +240,15 @@ export const mcpTools = [
         handler: async (args: any) => {
             try {
                 deleteTask(args.id);
-                return { content: [{ type: "text", text: "Task deleted" }] };
+                return { content: [{ type: "text", text: "Task forgotten" }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         },
     },
     {
-        name: "get_task",
-        description: "Get details of a specific task.",
+        name: "recall_task",
+        description: "Recall a specific task from my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -267,7 +267,7 @@ export const mcpTools = [
     },
     {
         name: "list_tasks",
-        description: "List tasks in a project with optional filtering.",
+        description: "List all tasks in my memory for a project.",
         inputSchema: {
             type: "object",
             properties: {
@@ -290,8 +290,8 @@ export const mcpTools = [
 
     // Workflow Operations
     {
-        name: "create_workflow",
-        description: "Create a multi-step workflow.",
+        name: "plan_workflow",
+        description: "Plan a multi-step workflow in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -307,7 +307,7 @@ export const mcpTools = [
             try {
                 const { projectId, userId, name, steps = [], status = 'active' } = args;
                 const workflow = createWorkflow(projectId, userId, name, steps, status);
-                return { content: [{ type: "text", text: `Workflow created: ${JSON.stringify(workflow)}` }] };
+                return { content: [{ type: "text", text: `Workflow planned: ${JSON.stringify(workflow)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -315,7 +315,7 @@ export const mcpTools = [
     },
     {
         name: "update_workflow",
-        description: "Update workflow steps or status.",
+        description: "Update workflow steps or status in my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -337,8 +337,8 @@ export const mcpTools = [
         },
     },
     {
-        name: "get_workflow",
-        description: "Get workflow details.",
+        name: "recall_workflow",
+        description: "Recall a workflow from my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -357,7 +357,7 @@ export const mcpTools = [
     },
     {
         name: "list_workflows",
-        description: "List workflows in a project.",
+        description: "List all workflows in my memory for a project.",
         inputSchema: {
             type: "object",
             properties: {
@@ -379,8 +379,8 @@ export const mcpTools = [
 
     // Knowledge Operations
     {
-        name: "add_keypoint",
-        description: "Add an important keypoint or highlight.",
+        name: "remember_keypoint",
+        description: "Remember an important keypoint or highlight.",
         inputSchema: {
             type: "object",
             properties: {
@@ -396,22 +396,22 @@ export const mcpTools = [
             try {
                 const { projectId = null, taskId = null, userId, content, metadata = {} } = args;
                 const keypoint = addKeypoint(projectId, taskId, userId, content, metadata);
-                return { content: [{ type: "text", text: `Keypoint added: ${JSON.stringify(keypoint)}` }] };
+                return { content: [{ type: "text", text: `Keypoint remembered: ${JSON.stringify(keypoint)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         },
     },
     {
-        name: "add_comment",
-        description: "Add a comment to a task or project.",
+        name: "add_thought",
+        description: "Add a thought or comment to my memory.",
         inputSchema: {
             type: "object",
             properties: {
                 projectId: { type: "string", description: "Project ID" },
                 taskId: { type: "string", description: "Task ID (optional)" },
                 userId: { type: "string", description: "User ID" },
-                content: { type: "string", description: "Comment content" },
+                content: { type: "string", description: "Thought content" },
                 metadata: { type: "object", description: "Additional metadata" }
             },
             required: ["userId", "content"],
@@ -420,7 +420,7 @@ export const mcpTools = [
             try {
                 const { projectId = null, taskId = null, userId, content, metadata = {} } = args;
                 const comment = addComment(projectId, taskId, userId, content, metadata);
-                return { content: [{ type: "text", text: `Comment added: ${JSON.stringify(comment)}` }] };
+                return { content: [{ type: "text", text: `Thought added: ${JSON.stringify(comment)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -428,7 +428,7 @@ export const mcpTools = [
     },
     {
         name: "add_note",
-        description: "Add a general note.",
+        description: "Add a general note to my memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -443,15 +443,15 @@ export const mcpTools = [
             try {
                 const { projectId = null, userId, content, metadata = {} } = args;
                 const note = addNote(projectId, userId, content, metadata);
-                return { content: [{ type: "text", text: `Note added: ${JSON.stringify(note)}` }] };
+                return { content: [{ type: "text", text: `Note remembered: ${JSON.stringify(note)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         },
     },
     {
-        name: "add_discovery",
-        description: "Record a new discovery or finding.",
+        name: "remember_discovery",
+        description: "Remember a new discovery or finding.",
         inputSchema: {
             type: "object",
             properties: {
@@ -466,7 +466,7 @@ export const mcpTools = [
             try {
                 const { projectId = null, userId, description, metadata = {} } = args;
                 const discovery = addDiscovery(projectId, userId, description, metadata);
-                return { content: [{ type: "text", text: `Discovery added: ${JSON.stringify(discovery)}` }] };
+                return { content: [{ type: "text", text: `Discovery remembered: ${JSON.stringify(discovery)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -475,8 +475,8 @@ export const mcpTools = [
 
     // Learning and Issue Tracking
     {
-        name: "log_mistake",
-        description: "Log a mistake or failure to learn from.",
+        name: "remember_mistake",
+        description: "Remember a mistake or failure to learn from.",
         inputSchema: {
             type: "object",
             properties: {
@@ -493,15 +493,15 @@ export const mcpTools = [
             try {
                 const { projectId = null, taskId = null, userId, description, resolution = '', metadata = {} } = args;
                 const mistake = logMistake(projectId, taskId, userId, description, resolution, metadata);
-                return { content: [{ type: "text", text: `Mistake logged: ${JSON.stringify(mistake)}` }] };
+                return { content: [{ type: "text", text: `Mistake remembered: ${JSON.stringify(mistake)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         },
     },
     {
-        name: "add_learning",
-        description: "Add a lesson learned or insight.",
+        name: "remember_learning",
+        description: "Remember a lesson learned or insight.",
         inputSchema: {
             type: "object",
             properties: {
@@ -517,15 +517,15 @@ export const mcpTools = [
             try {
                 const { projectId = null, taskId = null, userId, insight, metadata = {} } = args;
                 const learning = addLearning(projectId, taskId, userId, insight, metadata);
-                return { content: [{ type: "text", text: `Learning added: ${JSON.stringify(learning)}` }] };
+                return { content: [{ type: "text", text: `Learning remembered: ${JSON.stringify(learning)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         },
     },
     {
-        name: "add_task_boundary",
-        description: "Define a scope boundary for a task.",
+        name: "remember_boundary",
+        description: "Remember a scope boundary for a task.",
         inputSchema: {
             type: "object",
             properties: {
@@ -540,7 +540,7 @@ export const mcpTools = [
             try {
                 const { taskId, userId, boundary, metadata = {} } = args;
                 const tb = addTaskBoundary(taskId, userId, boundary, metadata);
-                return { content: [{ type: "text", text: `Task boundary added: ${JSON.stringify(tb)}` }] };
+                return { content: [{ type: "text", text: `Boundary remembered: ${JSON.stringify(tb)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -634,17 +634,17 @@ export const mcpTools = [
         },
     },
 
-    // Semantic Search
+    // Memory & Semantic Search
     {
-        name: "store_embedding",
-        description: "Store content with its embedding for semantic search.",
+        name: "memorize",
+        description: "Store something in my long-term memory with semantic understanding.",
         inputSchema: {
             type: "object",
             properties: {
                 refTable: { type: "string", description: "Reference table name" },
                 refId: { type: "string", description: "Reference ID" },
                 userId: { type: "string", description: "User ID" },
-                content: { type: "string", description: "Content to embed" }
+                content: { type: "string", description: "Content to remember" }
             },
             required: ["refTable", "refId", "userId", "content"],
         },
@@ -652,21 +652,21 @@ export const mcpTools = [
             try {
                 const { refTable, refId, userId, content } = args;
                 const result = await storeEmbedding(refTable, refId, userId, content);
-                return { content: [{ type: "text", text: `Embedding stored: ${JSON.stringify(result)}` }] };
+                return { content: [{ type: "text", text: `Memorized: ${JSON.stringify(result)}` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         },
     },
     {
-        name: "search_embeddings",
-        description: "Semantic search across stored embeddings.",
+        name: "recall",
+        description: "Search my memory for something semantically similar.",
         inputSchema: {
             type: "object",
             properties: {
                 userId: { type: "string", description: "User ID" },
-                query: { type: "string", description: "Search query" },
-                refTable: { type: "string", description: "Optional table filter" },
+                query: { type: "string", description: "What to recall" },
+                refTable: { type: "string", description: "Optional memory type filter" },
                 limit: { type: "number", description: "Max results", default: 10 }
             },
             required: ["userId", "query"],
