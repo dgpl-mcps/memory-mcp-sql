@@ -90,6 +90,7 @@ export const initSqlite = () => {
             description TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
             priority TEXT DEFAULT 'medium',
+            todos TEXT DEFAULT '[]',
             metadata TEXT DEFAULT '{}',
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -550,20 +551,21 @@ export const listProjects = (userId: string) => {
 };
 
 // Task Operations
-export const createTask = (projectId: string, userId: string, title: string, description: string = '', status: string = 'pending', priority: string = 'medium', metadata: any = {}) => {
+export const createTask = (projectId: string, userId: string, title: string, description: string = '', status: string = 'pending', priority: string = 'medium', todos: any[] = [], metadata: any = {}) => {
     const id = `task_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    db.prepare(`INSERT INTO Tasks (id, projectId, userId, title, description, status, priority, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, projectId, userId, title, description, status, priority, ensureJson(metadata));
-    return { id, projectId, userId, title, description, status, priority, metadata, createdAt: new Date().toISOString() };
+    db.prepare(`INSERT INTO Tasks (id, projectId, userId, title, description, status, priority, todos, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, projectId, userId, title, description, status, priority, ensureJson(todos), ensureJson(metadata));
+    return { id, projectId, userId, title, description, status, priority, todos, metadata, createdAt: new Date().toISOString() };
 };
 
-export const updateTask = (id: string, updates: { title?: string; description?: string; status?: string; priority?: string; metadata?: any }) => {
+export const updateTask = (id: string, updates: { title?: string; description?: string; status?: string; priority?: string; todos?: any[]; metadata?: any }) => {
     const sets: string[] = ['updatedAt = CURRENT_TIMESTAMP'];
     const vals: any[] = [];
     if (updates.title !== undefined) { sets.push('title = ?'); vals.push(updates.title); }
     if (updates.description !== undefined) { sets.push('description = ?'); vals.push(updates.description); }
     if (updates.status !== undefined) { sets.push('status = ?'); vals.push(updates.status); }
     if (updates.priority !== undefined) { sets.push('priority = ?'); vals.push(updates.priority); }
+    if (updates.todos !== undefined) { sets.push('todos = ?'); vals.push(ensureJson(updates.todos)); }
     if (updates.metadata !== undefined) { sets.push('metadata = ?'); vals.push(ensureJson(updates.metadata)); }
     vals.push(id);
     db.prepare(`UPDATE Tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -577,7 +579,7 @@ export const deleteTask = (id: string) => {
 export const getTask = (id: string) => {
     const row = db.prepare(`SELECT * FROM Tasks WHERE id = ?`).get(id) as any;
     if (!row) return null;
-    return { ...row, metadata: parseJson(row.metadata) };
+    return { ...row, todos: parseJson(row.todos), metadata: parseJson(row.metadata) };
 };
 
 export const listTasks = (projectId?: string, userId?: string, status?: string) => {
@@ -588,7 +590,7 @@ export const listTasks = (projectId?: string, userId?: string, status?: string) 
     if (status) { sql += ` AND status = ?`; params.push(status); }
     sql += ` ORDER BY createdAt DESC`;
     const rows = db.prepare(sql).all(...params) as any[];
-    return rows.map(r => ({ ...r, metadata: parseJson(r.metadata) }));
+    return rows.map(r => ({ ...r, todos: parseJson(r.todos), metadata: parseJson(r.metadata) }));
 };
 
 // Workflow Operations
@@ -729,7 +731,7 @@ export const storeEmbedding = async (refTable: string, refId: string, userId: st
     return { id, refTable, refId, userId, content };
 };
 
-export const searchEmbeddings = async (userId: string, query: string, refTable?: string, limit: number = 10) => {
+export const searchEmbeddings = async (userId: string, query: string, refTable?: string, limit: number = 10): Promise<any[]> => {
     const embedding = await getEmbeddingString(query);
     if (!embedding) {
         const pattern = `%${query}%`;
@@ -738,11 +740,17 @@ export const searchEmbeddings = async (userId: string, query: string, refTable?:
         if (refTable) { sql += ` AND refTable = ?`; params.push(refTable); }
         sql += ` LIMIT ?`;
         params.push(limit);
-        return db.prepare(sql).all(...params);
+        return db.prepare(sql).all(...params) as any[];
     }
 
     if (!dbConfig.useVectorSearch) {
-        return searchEmbeddings(userId, query, refTable, limit);
+        const pattern = `%${query}%`;
+        let sql = `SELECT * FROM Embeddings WHERE userId = ? AND content LIKE ?`;
+        const params: any[] = [userId, pattern];
+        if (refTable) { sql += ` AND refTable = ?`; params.push(refTable); }
+        sql += ` LIMIT ?`;
+        params.push(limit);
+        return db.prepare(sql).all(...params) as any[];
     }
 
     const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_embeddings' : 'vec_embeddings';

@@ -1,6 +1,4 @@
-import { Entity, Relation } from "../db/mongo.js";
-import mongoose from "mongoose";
-import { setShortTermMemory, getShortTermMemory } from "../db/sqlite.js";
+import { setShortTermMemory, getShortTermMemory, createEntity, getEntity, listEntities, updateEntity, createRelation, getRelations } from "../db/sqlite.js";
 
 // Specialized helper tools for common graph actions to avoid complex MCP JSON construction by the agent
 
@@ -21,15 +19,9 @@ export const projectTools = [
         handler: async (args: any) => {
             const { userId, projectId, ruleName, ruleDescription } = args;
             try {
-                const newEntity = await Entity.create({
-                    userId,
-                    projectId,
-                    entityType: 'CoreRule',
-                    name: ruleName,
-                    properties: { description: ruleDescription },
-                });
+                const newEntity = createEntity(userId, projectId, 'CoreRule', ruleName, { description: ruleDescription });
                 return {
-                    content: [{ type: "text", text: `Core Rule added with ID: ${newEntity._id}` }],
+                    content: [{ type: "text", text: `Core Rule added with ID: ${newEntity.id}` }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -52,15 +44,9 @@ export const projectTools = [
         handler: async (args: any) => {
             const { userId, projectId, epicName, epicDescription } = args;
             try {
-                const newEntity = await Entity.create({
-                    userId,
-                    projectId,
-                    entityType: 'Epic',
-                    name: epicName,
-                    properties: { description: epicDescription || "", status: "planned" },
-                });
+                const newEntity = createEntity(userId, projectId, 'Epic', epicName, { description: epicDescription || "", status: "planned" });
                 return {
-                    content: [{ type: "text", text: `Epic created with ID: ${newEntity._id}` }],
+                    content: [{ type: "text", text: `Epic created with ID: ${newEntity.id}` }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -84,41 +70,20 @@ export const projectTools = [
         handler: async (args: any) => {
             const { userId, projectId, taskName, epicId, details } = args;
 
-            // Enterprise Resilience V5: Complex operations are atomic via Transactions.
-            const session = await mongoose.startSession();
-            session.startTransaction();
-
             try {
-                const newEntity = await Entity.create([{
-                    userId,
-                    projectId,
-                    entityType: 'Todo',
-                    name: taskName,
-                    properties: { details: details || "", status: "todo" },
-                }], { session });
+                const newEntity = createEntity(userId, projectId, 'Todo', taskName, { details: details || "", status: "todo" });
 
                 let relText = "";
                 if (epicId) {
-                    await Relation.create([{
-                        userId,
-                        projectId,
-                        fromId: new mongoose.Types.ObjectId(newEntity[0]._id),
-                        toId: new mongoose.Types.ObjectId(epicId),
-                        relationType: "PART_OF",
-                        properties: {}
-                    }], { session });
+                    createRelation(userId, projectId, newEntity.id, epicId, "PART_OF", {});
                     relText = ` Linked to Epic ${epicId}.`;
                 }
 
-                await session.commitTransaction();
                 return {
-                    content: [{ type: "text", text: `Todo created with ID: ${newEntity[0]._id}.${relText}` }],
+                    content: [{ type: "text", text: `Todo created with ID: ${newEntity.id}.${relText}` }],
                 };
             } catch (err: any) {
-                await session.abortTransaction();
-                return { isError: true, content: [{ type: "text", text: `Transaction Aborted due to error: ${err.message}` }] };
-            } finally {
-                session.endSession();
+                return { isError: true, content: [{ type: "text", text: err.message }] };
             }
         }
     },
@@ -138,21 +103,14 @@ export const projectTools = [
         handler: async (args: any) => {
             const { userId, projectId, path, description } = args;
             try {
-                // Upsert logic for Mongo based on type and path
-                const existing = await Entity.findOne({ userId, projectId, entityType: 'FileMeta', name: path });
+                const entities = listEntities(userId, projectId, 'FileMeta');
+                const existing = entities.find(e => e.name === path);
 
                 if (existing) {
-                    existing.properties = { description };
-                    await existing.save();
+                    updateEntity(existing.id, { properties: { description } });
                     return { content: [{ type: "text", text: `File Meta updated for ${path}` }] };
                 } else {
-                    await Entity.create({
-                        userId,
-                        projectId,
-                        entityType: 'FileMeta',
-                        name: path,
-                        properties: { description },
-                    });
+                    createEntity(userId, projectId, 'FileMeta', path, { description });
                     return { content: [{ type: "text", text: `File Meta created for ${path}` }] };
                 }
             } catch (err: any) {
@@ -222,15 +180,9 @@ export const projectTools = [
         handler: async (args: any) => {
             const { userId, projectId, insight } = args;
             try {
-                const newEntity = await Entity.create({
-                    userId,
-                    projectId,
-                    entityType: 'Insight',
-                    name: `Insight: ${insight.substring(0, 30)}...`,
-                    properties: { insight },
-                });
+                const newEntity = createEntity(userId, projectId, 'Insight', `Insight: ${insight.substring(0, 30)}...`, { insight });
                 return {
-                    content: [{ type: "text", text: `Insight securely logged in long-term memory with ID: ${newEntity._id}` }],
+                    content: [{ type: "text", text: `Insight securely logged in long-term memory with ID: ${newEntity.id}` }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -252,14 +204,10 @@ export const projectTools = [
         handler: async (args: any) => {
             const { userId, projectId, keyword } = args;
             try {
-                const insights = await Entity.find({
-                    userId,
-                    projectId,
-                    entityType: 'Insight',
-                    name: { $regex: keyword, $options: "i" }
-                }).lean();
+                const insights = listEntities(userId, projectId, 'Insight');
+                const filtered = insights.filter(i => i.name.toLowerCase().includes(keyword.toLowerCase()));
                 return {
-                    content: [{ type: "text", text: JSON.stringify(insights, null, 2) }],
+                    content: [{ type: "text", text: JSON.stringify(filtered, null, 2) }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };

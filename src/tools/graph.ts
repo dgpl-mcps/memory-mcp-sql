@@ -354,14 +354,11 @@ export const graphTools = [
         handler: async (args: any) => {
             const { userId, projectId, limit = 20 } = args;
             try {
-                const timeline = await Entity.find({
-                    userId,
-                    projectId,
-                    entityType: { $in: ['Epic', 'Todo', 'CoreRule', 'Insight'] }
-                })
-                    .sort({ createdAt: 1 })
-                    .limit(limit)
-                    .lean();
+                const allEntities = listEntities(userId, projectId);
+                const timeline = allEntities
+                    .filter(e => ['Epic', 'Todo', 'CoreRule', 'Insight'].includes(e.entityType))
+                    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+                    .slice(0, limit);
 
                 return {
                     content: [{ type: "text", text: JSON.stringify(timeline, null, 2) }],

@@ -2,12 +2,10 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import dotenv from "dotenv";
-import mongoose from "mongoose";
-import { initMongo } from "./db/mongo.js";
 import { initSqlite } from "./db/sqlite.js";
 import { graphTools } from "./tools/graph.js";
 import { shortTermTools } from "./tools/shortTerm.js";
-
+import { mcpTools } from "./tools/mcp.js";
 import { contextTools } from "./tools/context.js";
 import { projectTools } from "./tools/project.js";
 import { documentTools } from "./tools/document.js";
@@ -30,6 +28,7 @@ dotenv.config({ path: envPath });
 const ALL_TOOLS: any[] = [
     ...graphTools,
     ...shortTermTools,
+    ...mcpTools,
     ...contextTools,
     ...projectTools,
     ...documentTools,
@@ -56,8 +55,7 @@ ALL_TOOLS.unshift({
 async function run() {
     console.error("Starting Memory MCP...");
 
-    // Initialize Databases
-    await initMongo();
+    // Initialize SQLite Database
     initSqlite();
 
     // Step 4 - Ensure appropriate Server instantiation
@@ -167,10 +165,8 @@ async function run() {
 // V7 Distributed Reliability: Graceful Shutdown Hooks
 // We must flush WAL caches to SSD and disconnect remote DBs cleanly before exits.
 const gracefulShutdown = async (signal: string) => {
-    console.error(`\nReceived ${signal}. V7 Distributed Reliability triggering Safe Shutdown Sequence...`);
+    console.error(`\nReceived ${signal}. Safe Shutdown Sequence...`);
     try {
-        await mongoose.disconnect();
-        console.error("- MongoDB Connections Safely Closed");
         // Wait briefly for SQLite WAL files to flush
         setTimeout(() => {
             console.error("- SQLite Buffers Flushed");

@@ -1,14 +1,12 @@
-import { Entity, Relation } from "../db/mongo.js";
-import { getShortTermMemory, setShortTermMemory } from "../db/sqlite.js";
+import { getShortTermMemory, setShortTermMemory, listEntities, getRelations } from "../db/sqlite.js";
 import { z } from "zod";
 import { validatePayload, baseSchema } from "./validation.js";
-import mongoose from "mongoose";
 
 // System Tools: Dedicated to Graph Maintenance, Backups, and Pruning
 export const systemTools = [
     {
         name: "create_memory_snapshot",
-        description: "Creates a designated backup of the entire MongoDB Graph for a given project, allowing future agents to restore it if catastrophic hallucination occurs.",
+        description: "Creates a designated backup of the entire SQLite Graph for a given project, allowing future agents to restore it if catastrophic hallucination occurs.",
         inputSchema: {
             type: "object",
             properties: {
@@ -26,8 +24,8 @@ export const systemTools = [
                 const { userId, projectId, snapshotName } = validatePayload(schema, args);
 
                 // Fetch all current entities and relations
-                const currentEntities = await Entity.find({ userId, projectId }).lean();
-                const currentRelations = await Relation.find({ userId, projectId }).lean();
+                const currentEntities = listEntities(userId, projectId);
+                const currentRelations = getRelations(userId, projectId);
 
                 // Store the stringified dump into SQLite Short Term Memory as a massive BLOB
                 const dump = JSON.stringify({ entities: currentEntities, relations: currentRelations });
@@ -83,15 +81,11 @@ export const systemTools = [
                 const memUsage = process.memoryUsage();
                 const mbUsed = Math.round(memUsage.heapUsed / 1024 / 1024);
 
-                // Determine Mongo Connection (0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting)
-                const mongoState = mongoose.connection.readyState;
-                const mongoStatus = mongoState === 1 ? 'CONNECTED' : (mongoState === 0 ? 'DISCONNECTED' : 'DEGRADED');
-
                 const diagnostics = {
                     node_status: "ACTIVE",
                     ram_heap_used_mb: mbUsed,
-                    mongo_graph_status: mongoStatus,
-                    sqlite_vector_status: 'CONNECTED', // If we reach here, local SQLite is operating
+                    sqlite_status: 'CONNECTED',
+                    sqlite_vector_status: 'CONNECTED',
                     uptime_seconds: Math.round(process.uptime())
                 };
 

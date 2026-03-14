@@ -1,14 +1,13 @@
-import { searchShortTermMemory } from "../db/sqlite.js";
-import { Entity } from "../db/mongo.js";
+import { searchShortTermMemory, listEntities } from "../db/sqlite.js";
 
 // Note: To make this a true hybrid search, it should also hit the 'vss_doc' vector table. 
 // For simplicity without duplicating all logic, we'll demonstrate a unified RAG orchestrator 
-// that hits ShortTerm Vector + Mongo Graph Node Names simultaneously.
+// that hits ShortTerm Vector + SQLite Graph Node Names simultaneously.
 
 export const hybridTools = [
     {
         name: "global_memory_search",
-        description: "A Unified Retrieval-Augmented Generation (RAG) search. Simultaneously queries the SQLite Vector short-term DB and the MongoDB Graph node titles to retrieve a consolidated block of highly relevant memory.",
+        description: "A Unified Retrieval-Augmented Generation (RAG) search. Simultaneously queries the SQLite Vector short-term DB and the SQLite Graph node titles to retrieve a consolidated block of highly relevant memory.",
         inputSchema: {
             type: "object",
             properties: {
@@ -25,11 +24,10 @@ export const hybridTools = [
                 // 1. Vector Search across Short Term Keys & Values via SQLite
                 const stmResults = await searchShortTermMemory(userId, projectId, query, limit);
 
-                // 2. Text Search across Long Term Graph Nodes via Mongoose
-                const graphResults = await Entity.find({
-                    userId, projectId,
-                    name: { $regex: query, $options: "i" }
-                }).limit(limit).lean();
+                // 2. Text Search across Long Term Graph Nodes via SQLite
+                const graphResults = listEntities(userId, projectId).filter(e => 
+                    e.name.toLowerCase().includes(query.toLowerCase())
+                ).slice(0, limit);
 
                 const unifiedResult = {
                     vector_short_term: stmResults,
