@@ -1,0 +1,5 @@
+node_modules/
+build/
+.env
+short_term_memory.db
+short_term_memory.db-journal
