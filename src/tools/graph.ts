@@ -44,7 +44,7 @@ export const graphTools = [
             properties: {
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID" },
-                id: { type: "string", description: "The Mongo ObjectID of the Entity" }
+                id: { type: "string", description: "The Entity ID of the Entity" }
             },
             required: ["userId", "projectId", "id"],
         },
@@ -71,8 +71,8 @@ export const graphTools = [
             properties: {
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID" },
-                fromId: { type: "string", description: "Mongo ObjectID of the starting Node" },
-                toId: { type: "string", description: "Mongo ObjectID of the target Node" },
+                fromId: { type: "string", description: "Entity ID of the starting Node" },
+                toId: { type: "string", description: "Entity ID of the target Node" },
                 relationType: { type: "string", description: "Type of relationship (DEPENDS_ON, SUBTASK_OF, etc)" },
                 properties: { type: "object", description: "JSON properties describing the relation context" }
             },
@@ -105,7 +105,7 @@ export const graphTools = [
             properties: {
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID" },
-                id: { type: "string", description: "Mongo ObjectID of the Entity to update" },
+                id: { type: "string", description: "Entity ID of the Entity to update" },
                 name: { type: "string", description: "New Name/Title of the entity (optional)" },
                 properties: { type: "object", description: "JSON properties to merge/update (optional, merges with existing if present)" }
             },
@@ -137,7 +137,7 @@ export const graphTools = [
             properties: {
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID" },
-                id: { type: "string", description: "Mongo ObjectID of the Entity to delete" }
+                id: { type: "string", description: "Entity ID of the Entity to delete" }
             },
             required: ["userId", "projectId", "id"],
         },
@@ -166,8 +166,8 @@ export const graphTools = [
             properties: {
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID" },
-                fromId: { type: "string", description: "Mongo ObjectID of the starting Node" },
-                toId: { type: "string", description: "Mongo ObjectID of the target Node" },
+                fromId: { type: "string", description: "Entity ID of the starting Node" },
+                toId: { type: "string", description: "Entity ID of the target Node" },
                 relationType: { type: "string", description: "Type of relationship to delete (e.g. DEPENDS_ON)" }
             },
             required: ["userId", "projectId", "fromId", "toId", "relationType"],
@@ -231,7 +231,7 @@ export const graphTools = [
             properties: {
                 userId: { type: "string" },
                 projectId: { type: "string" },
-                id: { type: "string", description: "Mongo ObjectID of the starting Node" },
+                id: { type: "string", description: "Entity ID of the starting Node" },
                 maxDepth: { type: "number", description: "Maximum depth to search (default 3, max 5)" }
             },
             required: ["userId", "projectId", "id"],
@@ -292,8 +292,8 @@ export const graphTools = [
             properties: {
                 userId: { type: "string" },
                 projectId: { type: "string" },
-                fromId: { type: "string", description: "Mongo ObjectID of the starting Node" },
-                toId: { type: "string", description: "Mongo ObjectID of the target Node" }
+                fromId: { type: "string", description: "Entity ID of the starting Node" },
+                toId: { type: "string", description: "Entity ID of the target Node" }
             },
             required: ["userId", "projectId", "fromId", "toId"],
         },

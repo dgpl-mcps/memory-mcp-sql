@@ -256,7 +256,7 @@ export const initSqlite = () => {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_document_chunks 
         ON DocumentChunks (userId, projectId, documentId, chunkIndex);
 
-        -- Graph: Entities and Relations (migrated from MongoDB)
+        -- Graph: Entities and Relations
         CREATE TABLE IF NOT EXISTS Entities (
             id TEXT PRIMARY KEY,
             userId TEXT NOT NULL,
@@ -285,6 +285,47 @@ export const initSqlite = () => {
         );
         CREATE INDEX IF NOT EXISTS idx_relations_from ON Relations(userId, projectId, fromId, relationType);
         CREATE INDEX IF NOT EXISTS idx_relations_to ON Relations(userId, projectId, toId, relationType);
+
+        -- Self-Improvement Tables
+        CREATE TABLE IF NOT EXISTS SelfReflections (
+            id TEXT PRIMARY KEY,
+            taskId TEXT,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            evaluation TEXT NOT NULL,
+            mistakes TEXT DEFAULT '[]',
+            learnings TEXT DEFAULT '[]',
+            rating INTEGER DEFAULT 3,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_reflections_user ON SelfReflections(userId);
+        CREATE INDEX IF NOT EXISTS idx_reflections_task ON SelfReflections(taskId);
+
+        CREATE TABLE IF NOT EXISTS ImprovementSuggestions (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            suggestion TEXT NOT NULL,
+            basedOn TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_suggestions_user ON ImprovementSuggestions(userId);
+        CREATE INDEX IF NOT EXISTS idx_suggestions_status ON ImprovementSuggestions(status);
+
+        -- Working Buffer for multi-step operations
+        CREATE TABLE IF NOT EXISTS WorkingBuffer (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            operationType TEXT NOT NULL,
+            state TEXT NOT NULL,
+            stepIndex INTEGER DEFAULT 0,
+            totalSteps INTEGER,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_working_buffer_user ON WorkingBuffer(userId);
     `);
 
     if (dbConfig.useVectorSearch) {
@@ -777,7 +818,7 @@ export const findRelatedContent = async (refTable: string, refId: string, limit:
     return searchEmbeddings('', contentRow.content, undefined, limit);
 };
 
-// Graph Operations (migrated from MongoDB)
+// Graph Operations
 export const createEntity = (userId: string, projectId: string, entityType: string, name: string, properties: any = {}) => {
     const id = `entity_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     db.prepare(`INSERT INTO Entities (id, userId, projectId, entityType, name, properties) VALUES (?, ?, ?, ?, ?, ?)`)
@@ -835,4 +876,149 @@ export const getRelations = (userId: string, projectId: string, fromId?: string,
 
 export const deleteRelation = (id: string) => {
     db.prepare(`DELETE FROM Relations WHERE id = ?`).run(id);
+};
+
+// Self-Improvement Functions
+
+export const createReflection = (
+    userId: string, 
+    projectId: string | null, 
+    taskId: string | null, 
+    evaluation: any, 
+    mistakes: any[] = [], 
+    learnings: any[] = [],
+    rating: number = 3
+) => {
+    const id = `refl_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    db.prepare(`INSERT INTO SelfReflections (id, userId, projectId, taskId, evaluation, mistakes, learnings, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, taskId, ensureJson(evaluation), ensureJson(mistakes), ensureJson(learnings), rating);
+    return { id, userId, projectId, taskId, evaluation, mistakes, learnings, rating, createdAt: new Date().toISOString() };
+};
+
+export const getReflectionByTask = (taskId: string) => {
+    const row = db.prepare(`SELECT * FROM SelfReflections WHERE taskId = ?`).get(taskId) as any;
+    if (!row) return null;
+    return {
+        ...row,
+        evaluation: parseJson(row.evaluation),
+        mistakes: parseJson(row.mistakes),
+        learnings: parseJson(row.learnings)
+    };
+};
+
+export const getUserReflections = (userId: string, limit: number = 20) => {
+    const rows = db.prepare(`SELECT * FROM SelfReflections WHERE userId = ? ORDER BY createdAt DESC LIMIT ?`)
+        .all(userId, limit) as any[];
+    return rows.map(r => ({
+        ...r,
+        evaluation: parseJson(r.evaluation),
+        mistakes: parseJson(r.mistakes),
+        learnings: parseJson(r.learnings)
+    }));
+};
+
+export const analyzeMistakePatterns = (userId: string, days: number = 30) => {
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const rows = db.prepare(`
+        SELECT mistakes FROM SelfReflections 
+        WHERE userId = ? AND createdAt > ?
+    `).all(userId, since) as any[];
+    
+    const allMistakes: string[] = [];
+    rows.forEach(r => {
+        const mistakes = parseJson(r.mistakes);
+        if (Array.isArray(mistakes)) {
+            allMistakes.push(...mistakes);
+        }
+    });
+    
+    // Count frequency of each mistake type
+    const frequency: Record<string, number> = {};
+    allMistakes.forEach((m: any) => {
+        const type = typeof m === 'string' ? m : (m.type || 'unknown');
+        frequency[type] = (frequency[type] || 0) + 1;
+    });
+    
+    return Object.entries(frequency)
+        .sort((a, b) => b[1] - a[1])
+        .map(([type, count]) => ({ type, count }));
+};
+
+export const getAverageRating = (userId: string, days: number = 30) => {
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const row = db.prepare(`
+        SELECT AVG(rating) as avg FROM SelfReflections 
+        WHERE userId = ? AND createdAt > ?
+    `).get(userId, since) as any;
+    return row?.avg || 0;
+};
+
+// Improvement Suggestions
+
+export const createImprovementSuggestion = (
+    userId: string,
+    projectId: string | null,
+    suggestion: string,
+    basedOn: string
+) => {
+    const id = `sugg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    db.prepare(`INSERT INTO ImprovementSuggestions (id, userId, projectId, suggestion, basedOn) VALUES (?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, suggestion, basedOn);
+    return { id, userId, projectId, suggestion, basedOn, status: 'pending', createdAt: new Date().toISOString() };
+};
+
+export const getUserSuggestions = (userId: string, status?: string) => {
+    let sql = `SELECT * FROM ImprovementSuggestions WHERE userId = ?`;
+    const params: any[] = [userId];
+    if (status) { sql += ` AND status = ?`; params.push(status); }
+    sql += ` ORDER BY createdAt DESC`;
+    return db.prepare(sql).all(...params) as any[];
+};
+
+export const updateSuggestionStatus = (id: string, status: string) => {
+    db.prepare(`UPDATE ImprovementSuggestions SET status = ? WHERE id = ?`).run(status, id);
+    return db.prepare(`SELECT * FROM ImprovementSuggestions WHERE id = ?`).get(id);
+};
+
+// Working Buffer Functions
+
+export const createWorkingBuffer = (
+    userId: string,
+    projectId: string | null,
+    operationType: string,
+    totalSteps: number,
+    initialState: any = {}
+) => {
+    const id = `wb_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    db.prepare(`INSERT INTO WorkingBuffer (id, userId, projectId, operationType, state, totalSteps) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, operationType, ensureJson(initialState), totalSteps);
+    return { id, userId, projectId, operationType, state: initialState, stepIndex: 0, totalSteps, createdAt: new Date().toISOString() };
+};
+
+export const getWorkingBuffer = (id: string) => {
+    const row = db.prepare(`SELECT * FROM WorkingBuffer WHERE id = ?`).get(id) as any;
+    if (!row) return null;
+    return { ...row, state: parseJson(row.state) };
+};
+
+export const updateWorkingBuffer = (id: string, stepIndex: number, state: any) => {
+    db.prepare(`UPDATE WorkingBuffer SET stepIndex = ?, state = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`)
+        .run(stepIndex, ensureJson(state), id);
+    return getWorkingBuffer(id);
+};
+
+export const completeWorkingBuffer = (id: string, finalState: any) => {
+    db.prepare(`UPDATE WorkingBuffer SET stepIndex = totalSteps, state = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`)
+        .run(ensureJson(finalState), id);
+    return getWorkingBuffer(id);
+};
+
+export const abortWorkingBuffer = (id: string) => {
+    db.prepare(`DELETE FROM WorkingBuffer WHERE id = ?`).run(id);
+    return { success: true };
+};
+
+export const getUserWorkingBuffers = (userId: string) => {
+    const rows = db.prepare(`SELECT * FROM WorkingBuffer WHERE userId = ? ORDER BY updatedAt DESC`).all(userId) as any[];
+    return rows.map(r => ({ ...r, state: parseJson(r.state) }));
 };

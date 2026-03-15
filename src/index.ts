@@ -1,5 +1,12 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { 
+    CallToolRequestSchema, 
+    ListToolsRequestSchema,
+    ListPromptsRequestSchema,
+    GetPromptRequestSchema,
+    ListResourcesRequestSchema,
+    ReadResourceRequestSchema
+} from "@modelcontextprotocol/sdk/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import dotenv from "dotenv";
 import { initSqlite } from "./db/sqlite.js";
@@ -11,10 +18,13 @@ import { projectTools } from "./tools/project.js";
 import { documentTools } from "./tools/document.js";
 import { hybridTools } from "./tools/hybrid.js";
 import { systemTools } from "./tools/system.js";
+import { selfImprovementTools } from "./tools/selfImprovement.js";
 import { AuditLogger } from "./utils/logger.js";
 import { CircuitBreaker } from "./utils/circuit.js";
 import { validateEnv } from "./utils/env.js";
 import { OutputSanitizer } from "./utils/sanitizer.js";
+import { getPrompts, getPrompt } from "./prompts/index.js";
+import { getResources, readResource } from "./resources/index.js";
 
 import path from "path";
 import { fileURLToPath } from 'url';
@@ -34,6 +44,7 @@ const ALL_TOOLS: any[] = [
     ...documentTools,
     ...hybridTools,
     ...systemTools,
+    ...selfImprovementTools,
 ];
 
 // V6 Hardening: Fatal fail immediately if Environment configuration is corrupted
@@ -69,6 +80,8 @@ async function run() {
         {
             capabilities: {
                 tools: {},
+                prompts: { listChanged: true },
+                resources: { subscribe: true, listChanged: true },
             },
         }
     );
@@ -161,6 +174,26 @@ async function run() {
             isError: true,
             content: [{ type: "text", text: `Unknown tool: ${name}` }]
         };
+    });
+
+    // Step 5 - Add Prompts Request Handlers
+    server.setRequestHandler(ListPromptsRequestSchema, async () => {
+        return await getPrompts();
+    });
+
+    server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+        const { name, arguments: args } = request.params;
+        return await getPrompt(name, args || {});
+    });
+
+    // Step 6 - Add Resources Request Handlers
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
+        return await getResources();
+    });
+
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+        const { uri } = request.params;
+        return await readResource(uri);
     });
 
     const transport = new StdioServerTransport();
