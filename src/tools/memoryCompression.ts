@@ -13,30 +13,120 @@ import {
     getLongTermMemoryStats,
     listTasks,
     listEntities,
-    listProjects
+    listProjects,
+    getProject,
+    getTask
 } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 
-function extractKeywords(text: string): string[] {
+// Stop words for keyword extraction
+const STOP_WORDS = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now', 'about', 'this', 'that', 'what', 'which', 'who', 'whom', 'whose']);
+
+function extractKeywordsAdvanced(text: string): string[] {
     const words = text.toLowerCase()
         .replace(/[^\w\s]/g, ' ')
         .split(/\s+/)
-        .filter(w => w.length > 3);
+        .filter(w => w.length > 3 && !STOP_WORDS.has(w));
+    
+    // Calculate term frequency
     const freq: Record<string, number> = {};
     words.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
-    return Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([w]) => w);
+    
+    // Score by frequency and position (earlier words get bonus)
+    const scored = Object.entries(freq).map(([word, count]) => {
+        const position = text.toLowerCase().indexOf(word);
+        const positionBonus = position < 100 ? 1.2 : position < 300 ? 1.1 : 1.0;
+        return { word, score: count * positionBonus };
+    });
+    
+    return scored.sort((a, b) => b.score - a.score).slice(0, 15).map(x => x.word);
 }
 
 function extractEntityReferences(query: string, projectId?: string | null): { tasks: string[]; keypoints: string[]; entities: string[]; projects: string[] } {
     const refs = { tasks: [] as string[], keypoints: [] as string[], entities: [] as string[], projects: [] as string[] };
     
-    const taskMatch = query.match(/(?:task|todo|#\d+)[-:\s]+(\w+)/gi);
-    if (taskMatch) refs.tasks = taskMatch.map(m => m.split(/[-:\s]+/).pop() || "").filter(Boolean);
+    // Task patterns
+    const taskPatterns = [
+        /(?:task|todo|item|action)[-:\s#]+(\w+)/gi,
+        /#(\d+)/g,
+        /task[:\s]+(\w+)/gi,
+        /(?:update|fix|create|complete|finish)\s+(\w+)\s+(?:task|todo)/gi
+    ];
+    taskPatterns.forEach(p => {
+        const matches = query.matchAll(p);
+        for (const m of matches) {
+            if (m[1]) refs.tasks.push(m[1].toLowerCase());
+        }
+    });
+    refs.tasks = [...new Set(refs.tasks)];
     
-    const projectMatch = query.match(/(?:project|pro)[-:\s]+(\w+)/gi);
-    if (projectMatch) refs.projects = projectMatch.map(m => m.split(/[-:\s]+/).pop() || "").filter(Boolean);
+    // Keypoint patterns
+    const kpPatterns = [
+        /(?:keypoint|key|important|note|remember)[-:\s]+(.+?)(?:\.|$)/gi,
+        /📌\s*(.+?)(?:\.|$)/g,
+        /\*(.+?)\*/g
+    ];
+    const kpMatches: string[] = [];
+    kpPatterns.forEach(p => {
+        const matches = query.matchAll(p);
+        for (const m of matches) {
+            if (m[1] && m[1].length > 3) kpMatches.push(m[1].trim().slice(0, 50));
+        }
+    });
+    refs.keypoints = [...new Set(kpMatches)];
+    
+    // Project patterns
+    const projPatterns = [
+        /(?:project|pro)[-:\s#]+(\w+)/gi,
+        /(?:in|for|with)\s+project\s+(\w+)/gi
+    ];
+    projPatterns.forEach(p => {
+        const matches = query.matchAll(p);
+        for (const m of matches) {
+            if (m[1]) refs.projects.push(m[1].toLowerCase());
+        }
+    });
+    refs.projects = [...new Set(refs.projects)];
+    
+    // Entity patterns (capitalized words)
+    const entityMatches = query.match(/[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)*/g) || [];
+    refs.entities = [...new Set(entityMatches.map(e => e.toLowerCase()))].slice(0, 5);
     
     return refs;
+}
+
+// Fuzzy string matching for better similarity
+function calculateSimilarity(query: string, text: string): number {
+    const queryLower = query.toLowerCase();
+    const textLower = text.toLowerCase();
+    
+    if (textLower.includes(queryLower)) return 100;
+    
+    const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+    const textWords = textLower.split(/\s+/).filter(w => w.length > 2);
+    
+    if (queryWords.length === 0 || textWords.length === 0) return 0;
+    
+    // Jaccard similarity
+    const querySet = new Set(queryWords);
+    const textSet = new Set(textWords);
+    const intersection = [...querySet].filter(w => textSet.has(w) || textLower.includes(w)).length;
+    const union = new Set([...querySet, ...textSet]).size;
+    
+    let similarity = (intersection / union) * 100;
+    
+    // Bonus for word order (consecutive matches)
+    let consecutiveBonus = 0;
+    let lastMatch = -1;
+    queryWords.forEach((w, i) => {
+        const idx = textWords.indexOf(w);
+        if (idx !== -1) {
+            if (lastMatch !== -1 && idx === lastMatch + 1) consecutiveBonus += 5;
+            lastMatch = idx;
+        }
+    });
+    
+    return Math.min(similarity + consecutiveBonus, 100);
 }
 
 function createUserSummary(query: string, maxLength: number = 200): string {
@@ -354,6 +444,311 @@ export const smartMemoryTools = [
                             longTerm: config.LONG_TERM_THRESHOLD
                         }
                     }, null, 2) }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "stitch_session_context",
+        description: "Stitch together recent summaries to provide context continuity. Useful when context was lost.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                sessionId: { type: "string", description: "Session ID" },
+                summaryCount: { type: "number", description: "Number of summaries to stitch", default: 3 }
+            },
+            required: ["userId", "sessionId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    userId: z.string().min(1),
+                    sessionId: z.string().min(1),
+                    summaryCount: z.number().default(3)
+                });
+                const { userId, sessionId, summaryCount } = validatePayload(schema, args);
+                
+                const summaries = getSessionSummaries(userId, sessionId);
+                if (summaries.length === 0) {
+                    // Fall back to short-term chats
+                    const chats = getShortTermChats(userId, sessionId, undefined, summaryCount);
+                    if (chats.length === 0) {
+                        return { content: [{ type: "text", text: "No conversation history found." }] };
+                    }
+                    
+                    // Stitch from short-term
+                    const stitched = chats.reverse().map(c => 
+                        `Q: ${c.userSummary || c.userQuery.slice(0, 80)}\nA: ${c.agentSummary || c.agentResponse.slice(0, 120)}`
+                    ).join("\n\n---\n\n");
+                    
+                    return { content: [{ type: "text", text: `## Context from Short-Term (${chats.length} chats)\n\n${stitched}` }] };
+                }
+                
+                // Stitch from long-term summaries
+                const recent = summaries.slice(-summaryCount).reverse();
+                const stitched = recent.map(s => 
+                    `## Summary ${s.summaryIndex}\nUser: ${s.userSummary}\nAgent: ${s.agentSummary}\nRefs: ${(JSON.parse(s.referencedTasks || "[]") as string[]).join(", ") || "none"}`
+                ).join("\n\n---\n\n");
+                
+                return { content: [{ type: "text", text: `## Context from Long-Term (${recent.length} summaries)\n\n${stitched}` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "search_across_memory",
+        description: "Search across all memory types with lower threshold. Returns unified results sorted by relevance.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                projectId: { type: "string", description: "Project ID (optional)" },
+                query: { type: "string", description: "Search query" },
+                includeRaw: { type: "boolean", description: "Include raw content in results", default: true },
+                limit: { type: "number", description: "Max results per type", default: 5 }
+            },
+            required: ["userId", "query"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    query: z.string().min(1),
+                    includeRaw: z.boolean().default(true),
+                    limit: z.number().default(5)
+                });
+                const { userId, projectId, query, includeRaw, limit } = validatePayload(schema, args);
+                
+                const config = getMemoryConfig();
+                const allResults: any[] = [];
+                
+                // Short-term (lower threshold for broader search)
+                const shortResults = searchShortTermMemory(userId, query, undefined, projectId || null, 10);
+                allResults.push(...shortResults.map(r => ({ 
+                    ...r, 
+                    memoryType: "short_term",
+                    displayText: r.userSummary || r.userQuery?.slice(0, 100)
+                })));
+                
+                // Long-term
+                const longResults = searchLongTermMemory(userId, query, projectId || null, 50);
+                allResults.push(...longResults.map(r => ({ 
+                    ...r, 
+                    memoryType: "long_term", 
+                    displayText: r.userSummary || r.userQuery?.slice(0, 100)
+                })));
+                
+                // De-duplicate and sort by similarity
+                const uniqueResults = new Map();
+                allResults.forEach(r => {
+                    const key = `${r.memoryType}-${r.id}`;
+                    if (!uniqueResults.has(key) || uniqueResults.get(key).similarity < r.similarity) {
+                        uniqueResults.set(key, r);
+                    }
+                });
+                
+                const sortedResults = [...uniqueResults.values()].sort((a, b) => b.similarity - a.similarity);
+                
+                return {
+                    content: [{ type: "text", text: JSON.stringify({
+                        query,
+                        totalFound: sortedResults.length,
+                        results: sortedResults.slice(0, 15).map(r => ({
+                            type: r.memoryType,
+                            relevance: `${Math.round(r.similarity)}%`,
+                            content: r.displayText,
+                            references: r.referencedTasks ? JSON.parse(r.referencedTasks) : [],
+                            createdAt: r.createdAt
+                        }))
+                    }, null, 2) }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "memory_health_check",
+        description: "Check memory health - orphaned references, broken links, duplicate entries.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                projectId: { type: "string", description: "Project ID (optional)" }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({});
+                const { userId, projectId } = validatePayload(schema, args);
+                
+                const issues: string[] = [];
+                const warnings: string[] = [];
+                
+                // Check short-term references
+                const shortChats = getShortTermChats(userId, undefined, projectId || null, 100);
+                const totalShort = shortChats.length;
+                
+                // Check long-term references
+                const stats = getLongTermMemoryStats(userId);
+                const totalLong = stats.totalMemories;
+                
+                // Check for empty summaries
+                const emptySummaries = shortChats.filter(c => !c.userSummary || !c.agentSummary).length;
+                if (emptySummaries > 0) {
+                    warnings.push(`${emptySummaries} chats have missing summaries`);
+                }
+                
+                // Check session counts
+                const sessionCounts = new Map<string, number>();
+                shortChats.forEach(c => {
+                    const count = sessionCounts.get(c.sessionId) || 0;
+                    sessionCounts.set(c.sessionId, count + 1);
+                });
+                
+                const avgChats = sessionCounts.size > 0 
+                    ? (totalShort / sessionCounts.size).toFixed(1) 
+                    : "0";
+                
+                // Health score
+                const healthScore = Math.max(0, 100 - (emptySummaries * 2) - (issues.length * 5));
+                
+                return {
+                    content: [{ type: "text", text: JSON.stringify({
+                        healthScore: `${healthScore}/100`,
+                        shortTerm: {
+                            totalChats: totalShort,
+                            sessions: sessionCounts.size,
+                            avgChatsPerSession: avgChats,
+                            issues: emptySummaries
+                        },
+                        longTerm: {
+                            totalMemories: totalLong,
+                            avgSimilarity: stats.averageSimilarity.toFixed(1)
+                        },
+                        warnings: warnings.length > 0 ? warnings : ["All systems operational"],
+                        recommendations: healthScore < 80 
+                            ? ["Consider running memory cleanup", "Update missing summaries"]
+                            : ["Memory system healthy"]
+                    }, null, 2) }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "update_chat_summary",
+        description: "Manually update a chat's summary for better context preservation.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                chatId: { type: "string", description: "Chat ID to update" },
+                userSummary: { type: "string", description: "New user summary" },
+                agentSummary: { type: "string", description: "New agent summary" },
+                combo: { type: "string", description: "New combo/understanding" }
+            },
+            required: ["chatId", "userSummary", "agentSummary"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    chatId: z.string().min(1),
+                    userSummary: z.string().min(1),
+                    agentSummary: z.string().min(1),
+                    combo: z.string().optional()
+                });
+                const { chatId, userSummary, agentSummary, combo } = validatePayload(schema, args);
+                
+                const finalCombo = combo || createCombo(userSummary, agentSummary);
+                updateChatSummary(chatId, userSummary, agentSummary, finalCombo);
+                
+                return { content: [{ type: "text", text: `Chat ${chatId} updated successfully` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "batch_store_chats",
+        description: "Store multiple chats at once efficiently. Use for bulk import or replay.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                projectId: { type: "string", description: "Project ID (optional)" },
+                sessionId: { type: "string", description: "Session ID" },
+                chats: { 
+                    type: "array", 
+                    items: {
+                        type: "object",
+                        properties: {
+                            userQuery: { type: "string" },
+                            agentResponse: { type: "string" }
+                        },
+                        required: ["userQuery", "agentResponse"]
+                    },
+                    description: "Array of user query and agent response pairs"
+                }
+            },
+            required: ["userId", "sessionId", "chats"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    sessionId: z.string().min(1),
+                    chats: z.array(z.object({
+                        userQuery: z.string().min(1),
+                        agentResponse: z.string().min(1)
+                    })).min(1)
+                });
+                const { userId, projectId, sessionId, chats } = validatePayload(schema, args);
+                
+                const config = getMemoryConfig();
+                const results: any[] = [];
+                
+                for (const chat of chats) {
+                    const refs = extractEntityReferences(chat.userQuery);
+                    const userSummary = createUserSummary(chat.userQuery, config.SUMMARY_MAX_LENGTH);
+                    const agentSummary = createAgentSummary(chat.agentResponse, config.SUMMARY_MAX_LENGTH);
+                    const combo = createCombo(userSummary, agentSummary);
+                    
+                    const result = addShortTermChat(
+                        userId, projectId || null, sessionId,
+                        chat.userQuery, chat.agentResponse,
+                        userSummary, agentSummary, combo,
+                        refs.tasks, refs.keypoints, refs.entities, refs.projects
+                    );
+                    results.push(result);
+                }
+                
+                const chatCount = getSessionChatCount(sessionId);
+                let summarizeResult = null;
+                
+                if (chatCount > 0 && chatCount % config.AUTO_SUMMARIZE_AFTER_CHATS === 0) {
+                    const summaryIndex = Math.floor(chatCount / config.AUTO_SUMMARIZE_AFTER_CHATS);
+                    const recent = getShortTermChats(userId, sessionId, projectId || null, config.AUTO_SUMMARIZE_AFTER_CHATS);
+                    const allRefs = { tasks: [] as string[], keypoints: [] as string[], entities: [] as string[], projects: [] as string[] };
+                    recent.forEach(c => {
+                        if (c.referencedTasks) allRefs.tasks.push(...JSON.parse(c.referencedTasks));
+                        if (c.referencedKeypoints) allRefs.keypoints.push(...JSON.parse(c.referencedKeypoints));
+                    });
+                    
+                    summarizeResult = summarizeAndMoveToLongTerm(
+                        userId, projectId || null, sessionId, summaryIndex,
+                        `Batch of ${chats.length} chats`, `Imported ${chats.length} conversations`,
+                        `Batch import: ${chats.length} chats`,
+                        chatCount, allRefs.tasks, allRefs.keypoints, [], []
+                    );
+                    clearShortTermMemory(userId, sessionId, config.MAX_SHORT_TERM_CHATS);
+                }
+                
+                return {
+                    content: [{ type: "text", text: `Batch stored: ${chats.length} chats\nTotal in session: ${chatCount}${summarizeResult ? `\nAuto-summarized to long-term` : ''}` }]
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };

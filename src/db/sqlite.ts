@@ -1390,17 +1390,47 @@ export const searchShortTermMemory = (
     
     const rows = db.prepare(sql).all(...params) as any[];
     
-    // Calculate simple similarity percentage
+    // Calculate improved similarity with fuzzy matching
     return rows.map(r => {
-        const combined = (r.userQuery + r.userSummary + r.agentResponse + r.agentSummary + r.combo).toLowerCase();
-        const queryLower = query.toLowerCase();
-        const words = queryLower.split(/\s+/).filter(w => w.length > 2);
-        const matches = words.filter(w => combined.includes(w)).length;
-        const similarity = words.length > 0 ? (matches / words.length) * 100 : 0;
+        const combined = (r.userQuery || "") + " " + (r.userSummary || "") + " " + (r.agentResponse || "") + " " + (r.agentSummary || "") + " " + (r.combo || "");
+        const similarity = calculateFuzzySimilarity(query, combined);
         
-        return { ...r, similarity: Math.min(similarity, 100), source: "short_term" };
+        return { ...r, similarity, source: "short_term" };
     }).filter(r => r.similarity >= threshold);
 };
+
+function calculateFuzzySimilarity(query: string, text: string): number {
+    const queryLower = query.toLowerCase();
+    const textLower = text.toLowerCase();
+    
+    if (textLower.includes(queryLower)) return 100;
+    
+    const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+    const textWords = textLower.split(/\s+/).filter(w => w.length > 2);
+    
+    if (queryWords.length === 0 || textWords.length === 0) return 0;
+    
+    // Jaccard similarity
+    const querySet = new Set(queryWords);
+    const textSet = new Set(textWords);
+    const intersection = [...querySet].filter(w => textSet.has(w) || textLower.includes(w)).length;
+    const union = new Set([...querySet, ...textSet]).size;
+    
+    let similarity = (intersection / union) * 100;
+    
+    // Bonus for word order
+    let consecutiveBonus = 0;
+    let lastMatch = -1;
+    queryWords.forEach((w, i) => {
+        const idx = textWords.indexOf(w);
+        if (idx !== -1) {
+            if (lastMatch !== -1 && idx === lastMatch + 1) consecutiveBonus += 5;
+            lastMatch = idx;
+        }
+    });
+    
+    return Math.min(similarity + consecutiveBonus, 100);
+}
 
 export const searchLongTermMemory = (
     userId: string,
@@ -1408,6 +1438,7 @@ export const searchLongTermMemory = (
     projectId?: string | null,
     threshold: number = 75
 ) => {
+    // Use text search for initial filter, then calculate actual similarity
     const pattern = `%${query}%`;
     let sql = `SELECT * FROM LongTermMemory WHERE userId = ? AND 
         (userQuery LIKE ? OR userSummary LIKE ? OR agentResponse LIKE ? OR combo LIKE ?)`;
@@ -1415,18 +1446,15 @@ export const searchLongTermMemory = (
     
     if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
     
-    sql += ` ORDER BY similarity DESC LIMIT 20`;
+    sql += ` ORDER BY createdAt DESC LIMIT 50`;
     
     const rows = db.prepare(sql).all(...params) as any[];
     
     return rows.map(r => {
-        const combined = (r.userQuery + r.userSummary + r.agentResponse + r.agentSummary + r.combo).toLowerCase();
-        const queryLower = query.toLowerCase();
-        const words = queryLower.split(/\s+/).filter(w => w.length > 2);
-        const matches = words.filter(w => combined.includes(w)).length;
-        const similarity = words.length > 0 ? (matches / words.length) * 100 : 0;
+        const combined = (r.userQuery || "") + " " + (r.userSummary || "") + " " + (r.agentResponse || "") + " " + (r.agentSummary || "") + " " + (r.combo || "");
+        const similarity = calculateFuzzySimilarity(query, combined);
         
-        return { ...r, similarity: Math.min(similarity, 100), source: "long_term" };
+        return { ...r, similarity, source: "long_term" };
     }).filter(r => r.similarity >= threshold);
 };
 
