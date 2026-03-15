@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { searchShortTermMemoryVector } from "../db/sqlite.js";
 
 export interface PromptArgument {
     name: string;
@@ -246,7 +247,7 @@ export const promptTemplates: PromptTemplate[] = [
             
             if (source === "all" || source === "memories") {
                 try {
-                    const memories = await searchShortTermMemory(userId, projectId, query, 5);
+                    const memories = await searchShortTermMemoryVector(userId, projectId, query, 5);
                     if (memories.length > 0) {
                         foundAnything = true;
                         content += `## Relevant Memories\n`;

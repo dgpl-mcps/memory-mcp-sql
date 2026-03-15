@@ -327,54 +327,71 @@ export const initSqlite = () => {
         );
         CREATE INDEX IF NOT EXISTS idx_working_buffer_user ON WorkingBuffer(userId);
 
-        -- Conversation Memory with Summary Compression
-        CREATE TABLE IF NOT EXISTS ConversationMemory (
+        -- Short-Term Memory (last N chats with low threshold 20%)
+        CREATE TABLE IF NOT EXISTS ShortTermChat (
             id TEXT PRIMARY KEY,
             userId TEXT NOT NULL,
             projectId TEXT,
-            sessionId TEXT,
-            role TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            rawContent TEXT,
+            sessionId TEXT NOT NULL,
+            chatIndex INTEGER NOT NULL,
+            userQuery TEXT NOT NULL,
+            userSummary TEXT,
+            agentResponse TEXT NOT NULL,
+            agentSummary TEXT,
+            combo TEXT,
+            isSummarized INTEGER DEFAULT 0,
+            -- References to other memory entities
+            referencedTasks TEXT DEFAULT '[]',
+            referencedKeypoints TEXT DEFAULT '[]',
+            referencedEntities TEXT DEFAULT '[]',
+            referencedProjects TEXT DEFAULT '[]',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_short_term_chat_user ON ShortTermChat(userId);
+        CREATE INDEX IF NOT EXISTS idx_short_term_chat_session ON ShortTermChat(sessionId);
+        CREATE INDEX IF NOT EXISTS idx_short_term_chat_project ON ShortTermChat(projectId);
+
+        -- Long-Term Memory (75%+ similarity required)
+        CREATE TABLE IF NOT EXISTS LongTermMemory (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            userQuery TEXT NOT NULL,
+            userSummary TEXT,
+            agentResponse TEXT NOT NULL,
+            agentSummary TEXT,
+            combo TEXT,
             keywords TEXT DEFAULT '[]',
             entities TEXT DEFAULT '[]',
-            tokenCount INTEGER DEFAULT 0,
-            isCompressed INTEGER DEFAULT 1,
-            metadata TEXT DEFAULT '{}',
+            similarity REAL DEFAULT 0,
+            -- References to other memory entities
+            referencedTasks TEXT DEFAULT '[]',
+            referencedKeypoints TEXT DEFAULT '[]',
+            referencedEntities TEXT DEFAULT '[]',
+            referencedProjects TEXT DEFAULT '[]',
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE INDEX IF NOT EXISTS idx_conversation_user ON ConversationMemory(userId);
-        CREATE INDEX IF NOT EXISTS idx_conversation_session ON ConversationMemory(sessionId);
-        CREATE INDEX IF NOT EXISTS idx_conversation_project ON ConversationMemory(projectId);
+        CREATE INDEX IF NOT EXISTS idx_long_term_user ON LongTermMemory(userId);
+        CREATE INDEX IF NOT EXISTS idx_long_term_project ON LongTermMemory(projectId);
+        CREATE INDEX IF NOT EXISTS idx_long_term_similarity ON LongTermMemory(similarity DESC);
 
-        -- Raw Request/Response Store (uncompressed, for fallback when context missing)
-        CREATE TABLE IF NOT EXISTS RawInteraction (
+        -- Session Summary (1 summary per N chats)
+        CREATE TABLE IF NOT EXISTS SessionSummary (
             id TEXT PRIMARY KEY,
             userId TEXT NOT NULL,
             projectId TEXT,
-            sessionId TEXT,
-            request TEXT NOT NULL,
-            response TEXT,
-            context TEXT,
+            sessionId TEXT NOT NULL,
+            summaryIndex INTEGER NOT NULL,
+            userSummary TEXT NOT NULL,
+            agentSummary TEXT NOT NULL,
+            combo TEXT,
+            chatCount INTEGER NOT NULL,
+            referencedTasks TEXT DEFAULT '[]',
+            referencedKeypoints TEXT DEFAULT '[]',
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE INDEX IF NOT EXISTS idx_raw_interaction_user ON RawInteraction(userId);
-        CREATE INDEX IF NOT EXISTS idx_raw_interaction_session ON RawInteraction(sessionId);
-
-        -- Memory Index for Fast Lookup
-        CREATE TABLE IF NOT EXISTS MemoryIndex (
-            id TEXT PRIMARY KEY,
-            userId TEXT NOT NULL,
-            projectId TEXT,
-            sessionId TEXT,
-            summary TEXT NOT NULL,
-            keywords TEXT DEFAULT '[]',
-            entities TEXT DEFAULT '[]',
-            compressionRatio REAL DEFAULT 0,
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS idx_memory_index_user ON MemoryIndex(userId);
-        CREATE INDEX IF NOT EXISTS idx_memory_index_session ON MemoryIndex(sessionId);
+        CREATE INDEX IF NOT EXISTS idx_session_summary_user ON SessionSummary(userId);
+        CREATE INDEX IF NOT EXISTS idx_session_summary_session ON SessionSummary(sessionId);
     `);
 
     if (dbConfig.useVectorSearch) {
@@ -463,7 +480,7 @@ export const getShortTermMemory = (userId: string, projectId: string, key: strin
     return result ? JSON.parse(result.value) : null;
 };
 
-export const searchShortTermMemory = async (userId: string, projectId: string, query: string, limit: number = 5) => {
+export const searchShortTermMemoryVector = async (userId: string, projectId: string, query: string, limit: number = 5) => {
     const embedding = await getEmbeddingString(query);
     if (!embedding) {
         // Fallback to simple matching if embeddings are not configured
@@ -1258,4 +1275,210 @@ export const deleteConversationMemory = (
     db.prepare(rawSql).run(...rawParams);
     
     return { success: true };
+};
+
+// ============================================
+// NEW SHORT-TERM + LONG-TERM MEMORY SYSTEM
+// ============================================
+
+export const addShortTermChat = (
+    userId: string,
+    projectId: string | null,
+    sessionId: string,
+    userQuery: string,
+    agentResponse: string,
+    userSummary?: string,
+    agentSummary?: string,
+    combo?: string,
+    referencedTasks: string[] = [],
+    referencedKeypoints: string[] = [],
+    referencedEntities: string[] = [],
+    referencedProjects: string[] = []
+) => {
+    const id = `stc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    
+    // Get current max chat index for this session
+    const maxIdx = db.prepare(`SELECT MAX(chatIndex) as maxIdx FROM ShortTermChat WHERE sessionId = ?`)
+        .get(sessionId) as { maxIdx: number | null };
+    const chatIndex = (maxIdx?.maxIdx ?? -1) + 1;
+    
+    db.prepare(`INSERT INTO ShortTermChat 
+        (id, userId, projectId, sessionId, chatIndex, userQuery, userSummary, agentResponse, agentSummary, combo, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, sessionId, chatIndex, userQuery, userSummary || "", agentResponse, agentSummary || "", combo || "", 
+             ensureJson(referencedTasks), ensureJson(referencedKeypoints), ensureJson(referencedEntities), ensureJson(referencedProjects));
+    
+    return { id, sessionId, chatIndex };
+};
+
+export const getShortTermChats = (
+    userId: string,
+    sessionId?: string,
+    projectId?: string | null,
+    limit?: number
+) => {
+    let sql = `SELECT * FROM ShortTermChat WHERE userId = ?`;
+    const params: any[] = [userId];
+    
+    if (sessionId) { sql += ` AND sessionId = ?`; params.push(sessionId); }
+    if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
+    
+    sql += ` ORDER BY chatIndex DESC`;
+    if (limit) { sql += ` LIMIT ?`; params.push(limit); }
+    
+    return db.prepare(sql).all(...params) as any[];
+};
+
+export const getSessionChatCount = (sessionId: string): number => {
+    const result = db.prepare(`SELECT COUNT(*) as count FROM ShortTermChat WHERE sessionId = ?`)
+        .get(sessionId) as { count: number };
+    return result?.count || 0;
+};
+
+export const summarizeAndMoveToLongTerm = (
+    userId: string,
+    projectId: string | null,
+    sessionId: string,
+    summaryIndex: number,
+    userSummary: string,
+    agentSummary: string,
+    combo: string,
+    chatCount: number,
+    referencedTasks: string[] = [],
+    referencedKeypoints: string[] = [],
+    referencedEntities: string[] = [],
+    referencedProjects: string[] = []
+) => {
+    const id = `ltm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    
+    // Extract keywords from combo
+    const keywords = combo.toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 10);
+    
+    db.prepare(`INSERT INTO LongTermMemory 
+        (id, userId, projectId, userQuery, userSummary, agentResponse, agentSummary, combo, keywords, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, userSummary, userSummary, agentSummary, agentSummary, combo, ensureJson(keywords),
+             ensureJson(referencedTasks), ensureJson(referencedKeypoints), ensureJson(referencedEntities), ensureJson(referencedProjects));
+    
+    // Save session summary
+    const summaryId = `ss_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    db.prepare(`INSERT INTO SessionSummary 
+        (id, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount, referencedTasks, referencedKeypoints) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(summaryId, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount,
+             ensureJson(referencedTasks), ensureJson(referencedKeypoints));
+    
+    return { id, movedToLongTerm: true };
+};
+
+export const searchShortTermMemory = (
+    userId: string,
+    query: string,
+    sessionId?: string,
+    projectId?: string | null,
+    threshold: number = 20
+) => {
+    const pattern = `%${query}%`;
+    let sql = `SELECT * FROM ShortTermChat WHERE userId = ? AND 
+        (userQuery LIKE ? OR userSummary LIKE ? OR agentResponse LIKE ? OR agentSummary LIKE ? OR combo LIKE ?)`;
+    const params: any[] = [userId, pattern, pattern, pattern, pattern, pattern];
+    
+    if (sessionId) { sql += ` AND sessionId = ?`; params.push(sessionId); }
+    if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
+    
+    sql += ` ORDER BY chatIndex DESC LIMIT 20`;
+    
+    const rows = db.prepare(sql).all(...params) as any[];
+    
+    // Calculate simple similarity percentage
+    return rows.map(r => {
+        const combined = (r.userQuery + r.userSummary + r.agentResponse + r.agentSummary + r.combo).toLowerCase();
+        const queryLower = query.toLowerCase();
+        const words = queryLower.split(/\s+/).filter(w => w.length > 2);
+        const matches = words.filter(w => combined.includes(w)).length;
+        const similarity = words.length > 0 ? (matches / words.length) * 100 : 0;
+        
+        return { ...r, similarity: Math.min(similarity, 100), source: "short_term" };
+    }).filter(r => r.similarity >= threshold);
+};
+
+export const searchLongTermMemory = (
+    userId: string,
+    query: string,
+    projectId?: string | null,
+    threshold: number = 75
+) => {
+    const pattern = `%${query}%`;
+    let sql = `SELECT * FROM LongTermMemory WHERE userId = ? AND 
+        (userQuery LIKE ? OR userSummary LIKE ? OR agentResponse LIKE ? OR combo LIKE ?)`;
+    const params: any[] = [userId, pattern, pattern, pattern, pattern];
+    
+    if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
+    
+    sql += ` ORDER BY similarity DESC LIMIT 20`;
+    
+    const rows = db.prepare(sql).all(...params) as any[];
+    
+    return rows.map(r => {
+        const combined = (r.userQuery + r.userSummary + r.agentResponse + r.agentSummary + r.combo).toLowerCase();
+        const queryLower = query.toLowerCase();
+        const words = queryLower.split(/\s+/).filter(w => w.length > 2);
+        const matches = words.filter(w => combined.includes(w)).length;
+        const similarity = words.length > 0 ? (matches / words.length) * 100 : 0;
+        
+        return { ...r, similarity: Math.min(similarity, 100), source: "long_term" };
+    }).filter(r => r.similarity >= threshold);
+};
+
+export const getSessionSummaries = (
+    userId: string,
+    sessionId: string
+) => {
+    return db.prepare(`SELECT * FROM SessionSummary WHERE userId = ? AND sessionId = ? ORDER BY summaryIndex`)
+        .all(userId, sessionId) as any[];
+};
+
+export const clearShortTermMemory = (
+    userId: string,
+    sessionId?: string,
+    keepLast: number = 0
+) => {
+    if (sessionId && keepLast > 0) {
+        const ids = db.prepare(`SELECT id FROM ShortTermChat WHERE sessionId = ? ORDER BY chatIndex DESC LIMIT ?`)
+            .all(sessionId, keepLast) as any[];
+        const keepIds = ids.map(r => r.id);
+        
+        if (keepIds.length > 0) {
+            const placeholders = keepIds.map(() => '?').join(',');
+            db.prepare(`DELETE FROM ShortTermChat WHERE userId = ? AND sessionId = ? AND id NOT IN (${placeholders})`)
+                .run(userId, sessionId, ...keepIds);
+        }
+    } else if (sessionId) {
+        db.prepare(`DELETE FROM ShortTermChat WHERE sessionId = ?`).run(sessionId);
+    } else {
+        db.prepare(`DELETE FROM ShortTermChat WHERE userId = ?`).run(userId);
+    }
+    
+    return { success: true };
+};
+
+export const updateChatSummary = (
+    chatId: string,
+    userSummary: string,
+    agentSummary: string,
+    combo: string
+) => {
+    db.prepare(`UPDATE ShortTermChat SET userSummary = ?, agentSummary = ?, combo = ?, isSummarized = 1 WHERE id = ?`)
+        .run(userSummary, agentSummary, combo, chatId);
+    return { success: true };
+};
+
+export const getLongTermMemoryStats = (userId: string) => {
+    const total = db.prepare(`SELECT COUNT(*) as count FROM LongTermMemory WHERE userId = ?`).get(userId) as { count: number };
+    const avgSimilarity = db.prepare(`SELECT AVG(similarity) as avg FROM LongTermMemory WHERE userId = ?`).get(userId) as { avg: number };
+    
+    return {
+        totalMemories: total?.count || 0,
+        averageSimilarity: avgSimilarity?.avg || 0
+    };
 };

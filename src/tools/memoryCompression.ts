@@ -1,148 +1,135 @@
 import { z } from "zod";
 import { validatePayload, baseSchema } from "./validation.js";
 import {
-    storeConversationMessage,
-    storeRawInteraction,
-    getConversationMemory,
-    searchConversationMemory,
-    getRawInteraction,
-    expandFromRaw,
-    getMemoryIndex,
-    deleteConversationMemory,
-    updateMemoryIndex
+    addShortTermChat,
+    getShortTermChats,
+    getSessionChatCount,
+    summarizeAndMoveToLongTerm,
+    searchShortTermMemory,
+    searchLongTermMemory,
+    getSessionSummaries,
+    clearShortTermMemory,
+    updateChatSummary,
+    getLongTermMemoryStats,
+    listTasks,
+    listEntities,
+    listProjects
 } from "../db/sqlite.js";
+import { getMemoryConfig } from "../utils/env.js";
 
 function extractKeywords(text: string): string[] {
     const words = text.toLowerCase()
         .replace(/[^\w\s]/g, ' ')
         .split(/\s+/)
         .filter(w => w.length > 3);
-    
     const freq: Record<string, number> = {};
     words.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
-    
-    return Object.entries(freq)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([w]) => w);
+    return Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([w]) => w);
 }
 
-function extractEntities(text: string): string[] {
-    const entities: string[] = [];
-    const patterns = [
-        /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:said|mentioned|asked|told)/g,
-        /(?:project|task|feature|bug):\s*([^\s,]+)/gi,
-        /#(\w+)/g
-    ];
+function extractEntityReferences(query: string, projectId?: string | null): { tasks: string[]; keypoints: string[]; entities: string[]; projects: string[] } {
+    const refs = { tasks: [] as string[], keypoints: [] as string[], entities: [] as string[], projects: [] as string[] };
     
-    patterns.forEach(p => {
-        const matches = text.matchAll(p);
-        for (const m of matches) {
-            if (m[1] && m[1].length > 2) {
-                entities.push(m[1]);
-            }
-        }
-    });
+    const taskMatch = query.match(/(?:task|todo|#\d+)[-:\s]+(\w+)/gi);
+    if (taskMatch) refs.tasks = taskMatch.map(m => m.split(/[-:\s]+/).pop() || "").filter(Boolean);
     
-    return [...new Set(entities)].slice(0, 5);
+    const projectMatch = query.match(/(?:project|pro)[-:\s]+(\w+)/gi);
+    if (projectMatch) refs.projects = projectMatch.map(m => m.split(/[-:\s]+/).pop() || "").filter(Boolean);
+    
+    return refs;
 }
 
-function generateSummary(content: string, maxLength: number = 500): string {
-    if (content.length <= maxLength) {
-        return content;
-    }
-    
-    const sentences = content
-        .replace(/([.!?])\s*(?=[A-Z])/g, '$1|')
-        .split('|')
-        .map(s => s.trim())
-        .filter(s => s.length > 10);
-    
-    if (sentences.length <= 3) {
-        return content.slice(0, maxLength) + "...";
-    }
-    
-    const first = sentences[0];
-    const last = sentences[sentences.length - 1];
-    const middle = sentences.slice(1, -1).slice(0, 2).join(' ');
-    
-    let summary = first;
-    if (middle) summary += " " + middle;
-    summary += " " + last;
-    
-    if (summary.length > maxLength) {
-        return summary.slice(0, maxLength) + "...";
-    }
-    
-    return summary;
+function createUserSummary(query: string, maxLength: number = 200): string {
+    if (query.length <= maxLength) return query;
+    return query.slice(0, maxLength) + "...";
 }
 
-function countTokens(text: string): number {
-    return Math.ceil(text.split(/\s+/).length * 1.3);
+function createAgentSummary(response: string, maxLength: number = 300): string {
+    if (response.length <= maxLength) return response;
+    const sentences = response.replace(/([.!?])\s*(?=[A-Z])/, '$1|').split('|').map(s => s.trim()).filter(s => s.length > 10);
+    if (sentences.length <= 2) return response.slice(0, maxLength) + "...";
+    return sentences[0] + " " + sentences[sentences.length - 1].slice(0, maxLength - sentences[0].length - 10) + "...";
 }
 
-export const memoryCompressionTools = [
+function createCombo(userSummary: string, agentSummary: string, progress: string = ""): string {
+    let combo = `## User Intent\n${userSummary}\n\n## Agent Response\n${agentSummary}`;
+    if (progress) combo += `\n\n## Progress\n${progress}`;
+    return combo;
+}
+
+export const smartMemoryTools = [
     {
-        name: "compress_and_store",
-        description: "Compress (summarize) a conversation message and store with raw fallback. Use after user-agent interactions to create compact memory.",
+        name: "store_chat_interaction",
+        description: "Store a user-agent chat interaction with automatic summary, references, and auto-summarization at N+1 threshold. Stores to short-term, auto-summarizes to long-term.",
         inputSchema: {
             type: "object",
             properties: {
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID (optional)" },
                 sessionId: { type: "string", description: "Session ID for conversation tracking" },
-                role: { type: "string", enum: ["user", "assistant", "system"], description: "Message role" },
-                content: { type: "string", description: "Full message content to compress" },
-                customSummary: { type: "string", description: "Optional custom summary (if not provided, auto-generated)" },
-                storeRaw: { type: "boolean", description: "Store raw content for fallback", default: true }
+                userQuery: { type: "string", description: "User's query/message" },
+                agentResponse: { type: "string", description: "Agent's response" },
+                progress: { type: "string", description: "Progress/updates to track (optional)" }
             },
-            required: ["userId", "sessionId", "role", "content"],
+            required: ["userId", "sessionId", "userQuery", "agentResponse"],
         },
         handler: async (args: any) => {
             try {
                 const schema = baseSchema.extend({
                     sessionId: z.string().min(1),
-                    role: z.enum(["user", "assistant", "system"]),
-                    content: z.string().min(1),
-                    customSummary: z.string().optional(),
-                    storeRaw: z.boolean().default(true)
+                    userQuery: z.string().min(1),
+                    agentResponse: z.string().min(1),
+                    progress: z.string().optional()
                 });
-                const { userId, projectId, sessionId, role, content, customSummary, storeRaw } = validatePayload(schema, args);
+                const { userId, projectId, sessionId, userQuery, agentResponse, progress } = validatePayload(schema, args);
                 
-                const summary = customSummary || generateSummary(content);
-                const keywords = extractKeywords(content);
-                const entities = extractEntities(content);
-                const tokens = countTokens(content);
+                const config = getMemoryConfig();
                 
-                const result = storeConversationMessage(
-                    userId,
-                    projectId || null,
-                    sessionId,
-                    role,
-                    summary,
-                    storeRaw ? content : "",
-                    keywords,
-                    entities,
-                    tokens
+                // Extract entity references
+                const refs = extractEntityReferences(userQuery, projectId || null);
+                
+                // Create summaries
+                const userSummary = createUserSummary(userQuery, config.SUMMARY_MAX_LENGTH);
+                const agentSummary = createAgentSummary(agentResponse, config.SUMMARY_MAX_LENGTH);
+                const combo = createCombo(userSummary, agentSummary, progress);
+                
+                // Add to short-term memory
+                const result = addShortTermChat(
+                    userId, projectId || null, sessionId,
+                    userQuery, agentResponse,
+                    userSummary, agentSummary, combo,
+                    refs.tasks, refs.keypoints, refs.entities, refs.projects
                 );
                 
-                // Also store in raw table if enabled
-                if (storeRaw) {
-                    storeRawInteraction(
-                        userId,
-                        projectId || null,
-                        sessionId,
-                        role === "user" ? content : "",
-                        role === "assistant" ? content : "",
-                        ""
+                // Check if we need to auto-summarize
+                const chatCount = getSessionChatCount(sessionId);
+                let summarizeResult = null;
+                
+                if (chatCount > 0 && chatCount % config.AUTO_SUMMARIZE_AFTER_CHATS === 0) {
+                    const summaryIndex = Math.floor(chatCount / config.AUTO_SUMMARIZE_AFTER_CHATS);
+                    
+                    // Get referenced entities from recent chats
+                    const recentChats = getShortTermChats(userId, sessionId, projectId || null, config.AUTO_SUMMARIZE_AFTER_CHATS);
+                    const allRefs = { tasks: [] as string[], keypoints: [] as string[], entities: [] as string[], projects: [] as string[] };
+                    recentChats.forEach(c => {
+                        if (c.referencedTasks) allRefs.tasks.push(...JSON.parse(c.referencedTasks));
+                        if (c.referencedKeypoints) allRefs.keypoints.push(...JSON.parse(c.referencedKeypoints));
+                        if (c.referencedEntities) allRefs.entities.push(...JSON.parse(c.referencedEntities));
+                        if (c.referencedProjects) allRefs.projects.push(...JSON.parse(c.referencedProjects));
+                    });
+                    
+                    summarizeResult = summarizeAndMoveToLongTerm(
+                        userId, projectId || null, sessionId, summaryIndex,
+                        userSummary, agentSummary, combo, chatCount,
+                        [...new Set(allRefs.tasks)], [...new Set(allRefs.keypoints)], [...new Set(allRefs.entities)], [...new Set(allRefs.projects)]
                     );
+                    
+                    // Keep only last MAX_SHORT_TERM_CHATS in short-term
+                    clearShortTermMemory(userId, sessionId, config.MAX_SHORT_TERM_CHATS);
                 }
                 
-                // Update memory index
-                updateMemoryIndex(userId, projectId || null, sessionId, summary, keywords, entities);
-                
                 return {
-                    content: [{ type: "text", text: `Compressed and stored message\nOriginal: ${content.length} chars\nSummary: ${summary.length} chars\nCompression: ${Math.round((1 - summary.length/content.length)*100)}%\nKeywords: ${keywords.slice(0,3).join(", ")}` }]
+                    content: [{ type: "text", text: `Chat stored: session=${sessionId}, index=${result.chatIndex}, total=${chatCount}${summarizeResult ? `, summarized to long-term (index ${summarizeResult.id})` : ''}\nRefs: ${refs.tasks.length} tasks, ${refs.keypoints.length} keypoints` }]
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -150,50 +137,69 @@ export const memoryCompressionTools = [
         }
     },
     {
-        name: "retrieve_compressed_memory",
-        description: "Retrieve compressed (summarized) conversation memory. Automatically falls back to raw if summary insufficient.",
+        name: "retrieve_smart_memory",
+        description: "Retrieve relevant memory - searches short-term (20% threshold) first, then long-term (75% threshold). Falls back to raw if needed.",
         inputSchema: {
             type: "object",
             properties: {
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID (optional)" },
-                sessionId: { type: "string", description: "Session ID (optional)" },
-                query: { type: "string", description: "Search query to find relevant memories" },
-                limit: { type: "number", description: "Max messages to retrieve", default: 10 }
+                sessionId: { type: "string", description: "Session ID (optional, searches all)" },
+                query: { type: "string", description: "Search query" },
+                shortTermOnly: { type: "boolean", description: "Only search short-term (default false)" }
             },
-            required: ["userId"],
+            required: ["userId", "query"],
         },
         handler: async (args: any) => {
             try {
                 const schema = baseSchema.extend({
                     sessionId: z.string().optional(),
-                    query: z.string().optional(),
-                    limit: z.number().default(10)
+                    query: z.string().min(1),
+                    shortTermOnly: z.boolean().default(false)
                 });
-                const { userId, projectId, sessionId, query, limit } = validatePayload(schema, args);
+                const { userId, projectId, sessionId, query, shortTermOnly } = validatePayload(schema, args);
                 
-                let results;
+                const config = getMemoryConfig();
+                const results: any[] = [];
                 
-                if (query) {
-                    results = searchConversationMemory(userId, query, projectId || null, limit);
-                } else {
-                    results = getConversationMemory(userId, projectId || null, sessionId || null, limit);
+                // Search short-term (20% threshold)
+                const shortTermResults = searchShortTermMemory(userId, query, sessionId, projectId || null, config.SHORT_TERM_THRESHOLD);
+                results.push(...shortTermResults.map(r => ({ ...r, memoryType: "short_term" })));
+                
+                // Search long-term (75% threshold) if not shortTermOnly
+                if (!shortTermOnly) {
+                    const longTermResults = searchLongTermMemory(userId, query, projectId || null, config.LONG_TERM_THRESHOLD);
+                    results.push(...longTermResults.map(r => ({ ...r, memoryType: "long_term" })));
                 }
                 
                 if (results.length === 0) {
-                    return { content: [{ type: "text", text: "No conversation memory found." }] };
+                    return { content: [{ type: "text", text: "No matching memories found. Try a different query or reduce threshold." }] };
                 }
                 
-                const formatted = results.map(r => ({
-                    role: r.role,
-                    summary: r.summary,
-                    source: r.source || "summary",
-                    tokens: r.tokenCount,
-                    createdAt: r.createdAt
-                }));
+                // Sort by memory type priority (short-term first) then similarity
+                results.sort((a, b) => {
+                    if (a.memoryType !== b.memoryType) return a.memoryType === "short_term" ? -1 : 1;
+                    return b.similarity - a.similarity;
+                });
                 
                 return {
-                    content: [{ type: "text", text: JSON.stringify(formatted, null, 2) }]
+                    content: [{ type: "text", text: JSON.stringify({
+                        found: results.length,
+                        shortTerm: shortTermResults.length,
+                        longTerm: shortTermOnly ? 0 : results.length - shortTermResults.length,
+                        memories: results.slice(0, 10).map(r => ({
+                            type: r.memoryType,
+                            similarity: `${Math.round(r.similarity)}%`,
+                            userQuery: r.userQuery?.slice(0, 100),
+                            userSummary: r.userSummary?.slice(0, 80),
+                            agentSummary: r.agentSummary?.slice(0, 100),
+                            references: {
+                                tasks: r.referencedTasks ? JSON.parse(r.referencedTasks) : [],
+                                keypoints: r.referencedKeypoints ? JSON.parse(r.referencedKeypoints) : [],
+                                entities: r.referencedEntities ? JSON.parse(r.referencedEntities) : []
+                            }
+                        }))
+                    }, null, 2) }]
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -201,15 +207,14 @@ export const memoryCompressionTools = [
         }
     },
     {
-        name: "expand_from_raw",
-        description: "Expand compressed memory by retrieving raw conversation data. Use when summary lacks needed context.",
+        name: "get_session_history",
+        description: "Get session conversation history from short-term memory.",
         inputSchema: {
             type: "object",
             properties: {
                 userId: { type: "string", description: "User ID" },
-                sessionId: { type: "string", description: "Session ID to expand" },
-                startIndex: { type: "number", description: "Start position in conversation", default: 0 },
-                count: { type: "number", description: "Number of messages to retrieve", default: 5 }
+                sessionId: { type: "string", description: "Session ID" },
+                limit: { type: "number", description: "Max chats to retrieve", default: 10 }
             },
             required: ["userId", "sessionId"],
         },
@@ -218,19 +223,27 @@ export const memoryCompressionTools = [
                 const schema = z.object({
                     userId: z.string().min(1),
                     sessionId: z.string().min(1),
-                    startIndex: z.number().default(0),
-                    count: z.number().default(5)
+                    limit: z.number().default(10)
                 });
-                const { userId, sessionId, startIndex, count } = validatePayload(schema, args);
+                const { userId, sessionId, limit } = validatePayload(schema, args);
                 
-                const rawData = expandFromRaw(userId, sessionId, startIndex, count);
-                
-                if (rawData.length === 0) {
-                    return { content: [{ type: "text", text: "No raw interactions found for this session." }] };
-                }
+                const chats = getShortTermChats(userId, sessionId, undefined, limit);
                 
                 return {
-                    content: [{ type: "text", text: JSON.stringify(rawData, null, 2) }]
+                    content: [{ type: "text", text: JSON.stringify({
+                        session: sessionId,
+                        totalChats: chats.length,
+                        chats: chats.map(c => ({
+                            index: c.chatIndex,
+                            userQuery: c.userQuery.slice(0, 100),
+                            agentResponse: c.agentResponse.slice(0, 100),
+                            summarized: c.isSummarized === 1,
+                            references: {
+                                tasks: JSON.parse(c.referencedTasks || "[]"),
+                                keypoints: JSON.parse(c.referencedKeypoints || "[]")
+                            }
+                        }))
+                    }, null, 2) }]
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -238,73 +251,13 @@ export const memoryCompressionTools = [
         }
     },
     {
-        name: "get_memory_index",
-        description: "Get the memory index (keywords, entities) for fast context lookup without loading full content.",
+        name: "get_session_summaries",
+        description: "Get session summaries from long-term memory.",
         inputSchema: {
             type: "object",
             properties: {
                 userId: { type: "string", description: "User ID" },
-                projectId: { type: "string", description: "Project ID (optional)" },
-                sessionId: { type: "string", description: "Session ID (optional)" }
-            },
-            required: ["userId"],
-        },
-        handler: async (args: any) => {
-            try {
-                const schema = baseSchema.extend({
-                    sessionId: z.string().optional()
-                });
-                const { userId, projectId, sessionId } = validatePayload(schema, args);
-                
-                const index = getMemoryIndex(userId, projectId || null, sessionId || null);
-                
-                return {
-                    content: [{ type: "text", text: JSON.stringify(index, null, 2) }]
-                };
-            } catch (err: any) {
-                return { isError: true, content: [{ type: "text", text: err.message }] };
-            }
-        }
-    },
-    {
-        name: "clear_conversation_memory",
-        description: "Clear conversation memory by session or date. Helps manage memory size.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                userId: { type: "string", description: "User ID" },
-                sessionId: { type: "string", description: "Session ID to clear (optional)" },
-                beforeDate: { type: "string", description: "Clear memories before this date (ISO string)" }
-            },
-            required: ["userId"],
-        },
-        handler: async (args: any) => {
-            try {
-                const schema = z.object({
-                    userId: z.string().min(1),
-                    sessionId: z.string().optional(),
-                    beforeDate: z.string().optional()
-                });
-                const { userId, sessionId, beforeDate } = validatePayload(schema, args);
-                
-                deleteConversationMemory(userId, sessionId, beforeDate);
-                
-                return {
-                    content: [{ type: "text", text: `Conversation memory cleared${sessionId ? ` for session ${sessionId}` : ''}${beforeDate ? ` before ${beforeDate}` : ''}` }]
-                };
-            } catch (err: any) {
-                return { isError: true, content: [{ type: "text", text: err.message }] };
-            }
-        }
-    },
-    {
-        name: "summarize_session",
-        description: "Generate a comprehensive summary of an entire session from stored messages.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                userId: { type: "string", description: "User ID" },
-                sessionId: { type: "string", description: "Session ID to summarize" }
+                sessionId: { type: "string", description: "Session ID" }
             },
             required: ["userId", "sessionId"],
         },
@@ -316,34 +269,91 @@ export const memoryCompressionTools = [
                 });
                 const { userId, sessionId } = validatePayload(schema, args);
                 
-                const messages = getConversationMemory(userId, null, sessionId, 100);
-                
-                if (messages.length === 0) {
-                    return { content: [{ type: "text", text: "No messages found for this session." }] };
-                }
-                
-                const userMessages = messages.filter(m => m.role === "user").map(m => m.summary);
-                const assistantMessages = messages.filter(m => m.role === "assistant").map(m => m.summary);
-                
-                const allKeywords: string[] = [];
-                const allEntities: string[] = [];
-                messages.forEach(m => {
-                    if (m.keywords) allKeywords.push(...m.keywords);
-                    if (m.entities) allEntities.push(...m.entities);
-                });
-                
-                const uniqueKeywords = [...new Set(allKeywords)].slice(0, 10);
-                const uniqueEntities = [...new Set(allEntities)].slice(0, 5);
-                
-                let sessionSummary = `## Session Summary\n\n`;
-                sessionSummary += `**Messages**: ${messages.length} (${userMessages.length} user, ${assistantMessages.length} assistant)\n`;
-                sessionSummary += `**Key Topics**: ${uniqueKeywords.join(", ") || "None detected"}\n`;
-                sessionSummary += `**Entities**: ${uniqueEntities.join(", ") || "None detected"}\n\n`;
-                sessionSummary += `### Recent User Messages\n`;
-                userMessages.slice(0, 3).forEach(m => { sessionSummary += `- ${m.slice(0, 100)}...\n`; });
+                const summaries = getSessionSummaries(userId, sessionId);
                 
                 return {
-                    content: [{ type: "text", text: sessionSummary }]
+                    content: [{ type: "text", text: JSON.stringify({
+                        session: sessionId,
+                        summaries: summaries.map(s => ({
+                            index: s.summaryIndex,
+                            userSummary: s.userSummary?.slice(0, 150),
+                            agentSummary: s.agentSummary?.slice(0, 200),
+                            chatCount: s.chatCount,
+                            references: {
+                                tasks: JSON.parse(s.referencedTasks || "[]"),
+                                keypoints: JSON.parse(s.referencedKeypoints || "[]")
+                            }
+                        }))
+                    }, null, 2) }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "clear_short_term_chats",
+        description: "Clear short-term memory, keeping last N chats.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                sessionId: { type: "string", description: "Session ID (optional, clears all if not provided)" },
+                keepLast: { type: "number", description: "Number of recent chats to keep", default: 0 }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    userId: z.string().min(1),
+                    sessionId: z.string().optional(),
+                    keepLast: z.number().default(0)
+                });
+                const { userId, sessionId, keepLast } = validatePayload(schema, args);
+                
+                clearShortTermMemory(userId, sessionId, keepLast);
+                
+                return {
+                    content: [{ type: "text", text: `Short-term memory cleared${sessionId ? ` for session ${sessionId}` : ''}${keepLast > 0 ? `, kept last ${keepLast}` : ''}` }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "get_memory_stats",
+        description: "Get memory statistics - counts and average similarity.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({ userId: z.string().min(1) });
+                const { userId } = validatePayload(schema, args);
+                
+                const config = getMemoryConfig();
+                const stats = getLongTermMemoryStats(userId);
+                
+                return {
+                    content: [{ type: "text", text: JSON.stringify({
+                        configuration: {
+                            maxShortTermChats: config.MAX_SHORT_TERM_CHATS,
+                            shortTermThreshold: `${config.SHORT_TERM_THRESHOLD}%`,
+                            longTermThreshold: `${config.LONG_TERM_THRESHOLD}%`,
+                            autoSummarizeAfter: config.AUTO_SUMMARIZE_AFTER_CHATS
+                        },
+                        longTermMemory: stats,
+                        thresholds: {
+                            shortTerm: config.SHORT_TERM_THRESHOLD,
+                            longTerm: config.LONG_TERM_THRESHOLD
+                        }
+                    }, null, 2) }]
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
