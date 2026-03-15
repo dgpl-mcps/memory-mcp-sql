@@ -553,7 +553,8 @@ export const setShortTermMemory = async (userId: string, projectId: string, key:
         // Note: We need a numeric rowid for vss0 table
         // Since id is TEXT, we hash the string to integer or lookup rowid. 
         const rowIdStmt = db.prepare(`SELECT rowid FROM ShortTermMemory WHERE id = ?`);
-        const rowInfo = rowIdStmt.get(stmId) as { rowid: number };
+        const rowInfo = rowIdStmt.get(stmId) as { rowid: number } | undefined;
+        if (!rowInfo) return;
 
         const vssStmt = db.prepare(`
               INSERT INTO vss_stm(rowid, embedding) 
@@ -668,7 +669,8 @@ export const storeDocumentChunk = async (userId: string, projectId: string, docu
     const embedding = await getEmbeddingString(content);
     if (embedding) {
         const rowIdStmt = db.prepare(`SELECT rowid FROM DocumentChunks WHERE id = ?`);
-        const rowInfo = rowIdStmt.get(docId) as { rowid: number };
+        const rowInfo = rowIdStmt.get(docId) as { rowid: number } | undefined;
+        if (!rowInfo) return;
 
         const vssStmt = db.prepare(`INSERT INTO vss_doc(rowid, embedding) VALUES (?, ?)`);
         try {
