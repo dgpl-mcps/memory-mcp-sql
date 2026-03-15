@@ -326,6 +326,55 @@ export const initSqlite = () => {
             updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_working_buffer_user ON WorkingBuffer(userId);
+
+        -- Conversation Memory with Summary Compression
+        CREATE TABLE IF NOT EXISTS ConversationMemory (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            sessionId TEXT,
+            role TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            rawContent TEXT,
+            keywords TEXT DEFAULT '[]',
+            entities TEXT DEFAULT '[]',
+            tokenCount INTEGER DEFAULT 0,
+            isCompressed INTEGER DEFAULT 1,
+            metadata TEXT DEFAULT '{}',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_user ON ConversationMemory(userId);
+        CREATE INDEX IF NOT EXISTS idx_conversation_session ON ConversationMemory(sessionId);
+        CREATE INDEX IF NOT EXISTS idx_conversation_project ON ConversationMemory(projectId);
+
+        -- Raw Request/Response Store (uncompressed, for fallback when context missing)
+        CREATE TABLE IF NOT EXISTS RawInteraction (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            sessionId TEXT,
+            request TEXT NOT NULL,
+            response TEXT,
+            context TEXT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_raw_interaction_user ON RawInteraction(userId);
+        CREATE INDEX IF NOT EXISTS idx_raw_interaction_session ON RawInteraction(sessionId);
+
+        -- Memory Index for Fast Lookup
+        CREATE TABLE IF NOT EXISTS MemoryIndex (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            sessionId TEXT,
+            summary TEXT NOT NULL,
+            keywords TEXT DEFAULT '[]',
+            entities TEXT DEFAULT '[]',
+            compressionRatio REAL DEFAULT 0,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_index_user ON MemoryIndex(userId);
+        CREATE INDEX IF NOT EXISTS idx_memory_index_session ON MemoryIndex(sessionId);
     `);
 
     if (dbConfig.useVectorSearch) {
@@ -1021,4 +1070,192 @@ export const abortWorkingBuffer = (id: string) => {
 export const getUserWorkingBuffers = (userId: string) => {
     const rows = db.prepare(`SELECT * FROM WorkingBuffer WHERE userId = ? ORDER BY updatedAt DESC`).all(userId) as any[];
     return rows.map(r => ({ ...r, state: parseJson(r.state) }));
+};
+
+// Conversation Memory Functions (Summary Compression + Raw Fallback)
+
+export const storeConversationMessage = (
+    userId: string,
+    projectId: string | null,
+    sessionId: string | null,
+    role: string,
+    summary: string,
+    rawContent: string,
+    keywords: string[] = [],
+    entities: string[] = [],
+    tokenCount: number = 0,
+    metadata: any = {}
+) => {
+    const id = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const compressionRatio = rawContent.length > 0 ? (1 - summary.length / rawContent.length) * 100 : 0;
+    
+    db.prepare(`INSERT INTO ConversationMemory 
+        (id, userId, projectId, sessionId, role, summary, rawContent, keywords, entities, tokenCount, isCompressed, metadata) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, sessionId, role, summary, rawContent, ensureJson(keywords), ensureJson(entities), tokenCount, 1, ensureJson(metadata));
+    
+    return { id, userId, projectId, sessionId, role, summary, rawContent: rawContent ? "[stored]" : null, compressionRatio, createdAt: new Date().toISOString() };
+};
+
+export const storeRawInteraction = (
+    userId: string,
+    projectId: string | null,
+    sessionId: string | null,
+    request: string,
+    response: string,
+    context: string = ""
+) => {
+    const id = `raw_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    db.prepare(`INSERT INTO RawInteraction (id, userId, projectId, sessionId, request, response, context) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, sessionId, request, response, context);
+    return { id, userId, projectId, sessionId, request: "[stored]", response: "[stored]", createdAt: new Date().toISOString() };
+};
+
+export const getConversationMemory = (
+    userId: string,
+    projectId?: string | null,
+    sessionId?: string | null,
+    limit: number = 20
+) => {
+    let sql = `SELECT * FROM ConversationMemory WHERE userId = ?`;
+    const params: any[] = [userId];
+    
+    if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
+    if (sessionId) { sql += ` AND sessionId = ?`; params.push(sessionId); }
+    
+    sql += ` ORDER BY createdAt DESC LIMIT ?`;
+    params.push(limit);
+    
+    const rows = db.prepare(sql).all(...params) as any[];
+    return rows.map(r => ({
+        ...r,
+        keywords: parseJson(r.keywords),
+        entities: parseJson(r.entities),
+        metadata: parseJson(r.metadata)
+    }));
+};
+
+export const searchConversationMemory = (
+    userId: string,
+    query: string,
+    projectId?: string | null,
+    limit: number = 10
+) => {
+    // First try summary search
+    const pattern = `%${query}%`;
+    let sql = `SELECT * FROM ConversationMemory WHERE userId = ? AND summary LIKE ?`;
+    const params: any[] = [userId, pattern];
+    
+    if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
+    sql += ` ORDER BY createdAt DESC LIMIT ?`;
+    params.push(limit);
+    
+    const rows = db.prepare(sql).all(...params) as any[];
+    
+    if (rows.length > 0) {
+        return rows.map(r => ({
+            ...r,
+            keywords: parseJson(r.keywords),
+            entities: parseJson(r.entities),
+            source: "summary"
+        }));
+    }
+    
+    // Fallback to raw interaction search if summary didn't find enough
+    let rawSql = `SELECT * FROM RawInteraction WHERE userId = ? AND (request LIKE ? OR response LIKE ? OR context LIKE ?)`;
+    const rawParams: any[] = [userId, pattern, pattern, pattern];
+    
+    if (projectId) { rawSql += ` AND projectId = ?`; rawParams.push(projectId); }
+    rawSql += ` ORDER BY createdAt DESC LIMIT ?`;
+    rawParams.push(limit);
+    
+    const rawRows = db.prepare(rawSql).all(...rawParams) as any[];
+    
+    return rawRows.map(r => ({
+        ...r,
+        source: "raw",
+        summary: `[Retrieved from raw: ${r.request.slice(0, 100)}...]`
+    }));
+};
+
+export const getRawInteraction = (
+    userId: string,
+    sessionId: string,
+    limit: number = 10
+) => {
+    const rows = db.prepare(`SELECT * FROM RawInteraction WHERE userId = ? AND sessionId = ? ORDER BY createdAt DESC LIMIT ?`)
+        .all(userId, sessionId, limit) as any[];
+    return rows;
+};
+
+export const expandFromRaw = (
+    userId: string,
+    sessionId: string,
+    startIndex: number = 0,
+    count: number = 5
+) => {
+    const rows = db.prepare(`SELECT * FROM RawInteraction WHERE userId = ? AND sessionId = ? ORDER BY createdAt ASC LIMIT ? OFFSET ?`)
+        .all(userId, sessionId, count, startIndex) as any[];
+    return rows;
+};
+
+export const updateMemoryIndex = (
+    userId: string,
+    projectId: string | null,
+    sessionId: string | null,
+    summary: string,
+    keywords: string[],
+    entities: string[]
+) => {
+    const id = `idx_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    db.prepare(`INSERT OR REPLACE INTO MemoryIndex (id, userId, projectId, sessionId, summary, keywords, entities, compressionRatio) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, sessionId, summary, ensureJson(keywords), ensureJson(entities), 0);
+    return { id, userId, projectId, sessionId, summary, keywords, entities };
+};
+
+export const getMemoryIndex = (
+    userId: string,
+    projectId?: string | null,
+    sessionId?: string | null
+) => {
+    let sql = `SELECT * FROM MemoryIndex WHERE userId = ?`;
+    const params: any[] = [userId];
+    
+    if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
+    if (sessionId) { sql += ` AND sessionId = ?`; params.push(sessionId); }
+    
+    sql += ` ORDER BY createdAt DESC`;
+    
+    const rows = db.prepare(sql).all(...params) as any[];
+    return rows.map(r => ({
+        ...r,
+        keywords: parseJson(r.keywords),
+        entities: parseJson(r.entities)
+    }));
+};
+
+export const deleteConversationMemory = (
+    userId: string,
+    sessionId?: string,
+    beforeDate?: string
+) => {
+    let sql = `DELETE FROM ConversationMemory WHERE userId = ?`;
+    const params: any[] = [userId];
+    
+    if (sessionId) { sql += ` AND sessionId = ?`; params.push(sessionId); }
+    if (beforeDate) { sql += ` AND createdAt < ?`; params.push(beforeDate); }
+    
+    db.prepare(sql).run(...params);
+    
+    // Also clean raw interactions
+    let rawSql = `DELETE FROM RawInteraction WHERE userId = ?`;
+    const rawParams: any[] = [userId];
+    
+    if (sessionId) { rawSql += ` AND sessionId = ?`; rawParams.push(sessionId); }
+    if (beforeDate) { rawSql += ` AND createdAt < ?`; rawParams.push(beforeDate); }
+    
+    db.prepare(rawSql).run(...rawParams);
+    
+    return { success: true };
 };
