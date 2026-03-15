@@ -1402,7 +1402,7 @@ export const addShortTermChat = (
     
     db.prepare(`INSERT INTO ShortTermChat 
         (id, userId, projectId, sessionId, chatIndex, userQuery, userSummary, agentResponse, agentSummary, combo, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, userId, projectId, sessionId, chatIndex, userQuery, userSummary || "", agentResponse, agentSummary || "", combo || "", 
              ensureJson(referencedTasks), ensureJson(referencedKeypoints), ensureJson(referencedEntities), ensureJson(referencedProjects));
     
