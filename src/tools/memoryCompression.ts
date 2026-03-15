@@ -898,7 +898,7 @@ export const memoryTools = [
                 // Session duration estimate
                 const firstChat = chats[chats.length - 1];
                 const lastChat = chats[0];
-                const durationMins = firstChat && lastChat ? Math.round((new Date(lastChat.createdAt).getTime() - new Date(firstChat.createdAt).getTime()) / 60000) : 0;
+                const durationMins = firstChat && lastChat ? Math.round(((new Date(lastChat.createdAt).getTime() || 0) - (new Date(firstChat.createdAt).getTime() || 0)) / 60000) : 0;
 
                 // Completion metrics
                 const successCount = intents.filter(i => i === 'success').length;

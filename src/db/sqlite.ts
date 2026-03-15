@@ -1291,7 +1291,7 @@ export const searchConversationMemory = (
     return rawRows.map(r => ({
         ...r,
         source: "raw",
-        summary: `[Retrieved from raw: ${r.request.slice(0, 100)}...]`
+        summary: `[Retrieved from raw: ${(r.request || '').slice(0, 100)}...]`
     }));
 };
 
@@ -1776,7 +1776,7 @@ export const getOptimizedContext = (
     
     // Add recent chats
     for (const c of recentChats.reverse()) {
-        const text = `Q: ${c.userQuery.slice(0, 200)}\nA: ${c.agentResponse.slice(0, 300)}\n`;
+        const text = `Q: ${(c.userQuery || '').slice(0, 200)}\nA: ${(c.agentResponse || '').slice(0, 300)}\n`;
         if (totalChars + text.length > maxChars) break;
         context += text;
         totalChars += text.length;
