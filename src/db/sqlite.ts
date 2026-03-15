@@ -1454,8 +1454,8 @@ export const summarizeAndMoveToLongTerm = (
     
     db.prepare(`INSERT INTO LongTermMemory 
         (id, userId, projectId, userQuery, userSummary, agentResponse, agentSummary, combo, keywords, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, userId, projectId, userSummary, userSummary, agentSummary, agentSummary, combo, ensureJson(keywords),
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, "", userSummary, "", agentSummary, combo, ensureJson(keywords),
              ensureJson(referencedTasks), ensureJson(referencedKeypoints), ensureJson(referencedEntities), ensureJson(referencedProjects));
     
     // Save session summary
@@ -1804,7 +1804,7 @@ export const createIncrementalSummary = (
     db.prepare(`INSERT INTO LongTermMemory 
         (id, userId, projectId, sessionId, userQuery, userSummary, agentResponse, agentSummary, combo, isIncremental, parentSummaryId, priority) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
-        .run(id, userId, projectId, sessionId, `Incremental summary #${chatCount}`, userSummary, agentSummary, combo, parentSummaryId, 0.6);
+        .run(id, userId, projectId, sessionId, `Incremental summary #${chatCount}`, userSummary, agentSummary || "", agentSummary, combo, parentSummaryId || null, 0.6);
     
     // Create session summary too
     const summaryId = `ss_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
