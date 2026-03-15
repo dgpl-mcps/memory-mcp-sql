@@ -466,7 +466,7 @@ export const memoryTools = [
                         score: r.score + '%',
                         user: r.userSummary||r.userQuery?.slice(0,60),
                         agent: r.agentSummary||r.agentResponse?.slice(0,80),
-                        tasks: JSON.parse(r.referencedTasks||"[]").slice(0,2)
+                        tasks: (() => { try { return JSON.parse(r.referencedTasks||"[]"); } catch { return []; } })().slice(0,2)
                     }))
                 }, null, 2) }] };
             } catch (err: any) {
@@ -961,8 +961,8 @@ export const memoryTools = [
                         query: m.userQuery,
                         summary: m.userSummary,
                         response: m.agentSummary,
-                        keywords: JSON.parse(m.keywords||"[]"),
-                        entities: JSON.parse(m.entities||"[]"),
+                        keywords: (() => { try { return JSON.parse(m.keywords||"[]"); } catch { return []; } })(),
+                        entities: (() => { try { return JSON.parse(m.entities||"[]"); } catch { return []; } })(),
                         priority: m.priority,
                         pinned: m.isPinned === 1,
                         createdAt: m.createdAt
@@ -1238,7 +1238,7 @@ export const memoryTools = [
                         id: r.id,
                         query: r.userQuery?.slice(0,60),
                         summary: r.userSummary?.slice(0,80),
-                        tags: JSON.parse(r.tags||"[]")
+                        tags: (() => { try { return JSON.parse(r.tags||"[]"); } catch { return []; } })()
                     }))
                 }, null, 2) }] };
             } catch (err: any) {

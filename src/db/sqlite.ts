@@ -575,7 +575,7 @@ export const getShortTermMemory = (userId: string, projectId: string, key: strin
         WHERE userId = ? AND projectId = ? AND key = ?
     `);
     const result = stmt.get(userId, projectId, key) as { value: string } | undefined;
-    return result ? JSON.parse(result.value) : null;
+    return result ? (() => { try { return JSON.parse(result.value); } catch { return null; } })() : null;
 };
 
 export const searchShortTermMemoryVector = async (userId: string, projectId: string, query: string, limit: number = 5) => {
@@ -591,7 +591,7 @@ export const searchShortTermMemoryVector = async (userId: string, projectId: str
         const wildcard = `%${query}%`;
         return stmt.all(userId, projectId, wildcard, wildcard, limit).map((row: any) => ({
             key: row.key,
-            value: JSON.parse(row.value)
+            value: (() => { try { return JSON.parse(row.value); } catch { return null; } })()
         }));
     }
 
@@ -606,7 +606,7 @@ export const searchShortTermMemoryVector = async (userId: string, projectId: str
     const results = stmt.all(userId, projectId, embedding, limit);
     return results.map((row: any) => ({
         key: row.key,
-        value: JSON.parse(row.value),
+        value: (() => { try { return JSON.parse(row.value); } catch { return null; } })(),
         distance: row.distance
     }));
 };
@@ -619,7 +619,7 @@ export const listShortTermMemory = (userId: string, projectId: string) => {
     const results = stmt.all(userId, projectId);
     return results.map((row: any) => ({
         key: row.key,
-        value: JSON.parse(row.value)
+        value: (() => { try { return JSON.parse(row.value); } catch { return null; } })()
     }));
 };
 
@@ -1977,8 +1977,8 @@ export const calculateQualityScore = (memory: any): number => {
     
     // Completeness bonus
     const hasSummary = memory.userSummary && memory.userSummary.length > 10;
-    const hasKeywords = memory.keywords && JSON.parse(memory.keywords).length > 0;
-    const hasEntities = memory.entities && JSON.parse(memory.entities).length > 0;
+    const hasKeywords = memory.keywords && (() => { try { return JSON.parse(memory.keywords).length > 0; } catch { return false; } })();
+    const hasEntities = memory.entities && (() => { try { return JSON.parse(memory.entities).length > 0; } catch { return false; } })();
     if (hasSummary) score += 0.1;
     if (hasKeywords) score += 0.1;
     if (hasEntities) score += 0.1;
@@ -2044,16 +2044,16 @@ export const mergeMemories = (targetId: string, sourceId: string) => {
     if (!source || !target) return { success: false, error: "Memory not found" };
     
     // Merge: combine keywords, entities, add links
-    const targetKeywords = JSON.parse(target.keywords || "[]");
-    const sourceKeywords = JSON.parse(source.keywords || "[]");
+    const targetKeywords = (() => { try { return JSON.parse(target.keywords || "[]"); } catch { return []; } })();
+    const sourceKeywords = (() => { try { return JSON.parse(source.keywords || "[]"); } catch { return []; } })();
     const mergedKeywords = [...new Set([...targetKeywords, ...sourceKeywords])];
     
-    const targetEntities = JSON.parse(target.entities || "[]");
-    const sourceEntities = JSON.parse(source.entities || "[]");
+    const targetEntities = (() => { try { return JSON.parse(target.entities || "[]"); } catch { return []; } })();
+    const sourceEntities = (() => { try { return JSON.parse(source.entities || "[]"); } catch { return []; } })();
     const mergedEntities = [...new Set([...targetEntities, ...sourceEntities])];
     
-    const targetSessions = JSON.parse(target.linkedSessions || "[]");
-    const sourceSessions = JSON.parse(source.linkedSessions || "[]");
+    const targetSessions = (() => { try { return JSON.parse(target.linkedSessions || "[]"); } catch { return []; } })();
+    const sourceSessions = (() => { try { return JSON.parse(source.linkedSessions || "[]"); } catch { return []; } })();
     const mergedSessions = [...new Set([...targetSessions, ...sourceSessions])];
     
     // Update target
