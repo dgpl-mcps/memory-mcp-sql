@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { createRequire } from 'module';
+import { getMemoryConfig } from '../utils/env.js';
 
 const require = createRequire(import.meta.url);
 let sqliteVss: any = null;
@@ -340,16 +341,23 @@ export const initSqlite = () => {
             agentSummary TEXT,
             combo TEXT,
             isSummarized INTEGER DEFAULT 0,
+            -- Priority/importance
+            priority REAL DEFAULT 0.5,
+            isPinned INTEGER DEFAULT 0,
             -- References to other memory entities
             referencedTasks TEXT DEFAULT '[]',
             referencedKeypoints TEXT DEFAULT '[]',
             referencedEntities TEXT DEFAULT '[]',
             referencedProjects TEXT DEFAULT '[]',
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            -- Linked sessions for cross-session context
+            linkedSessions TEXT DEFAULT '[]',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            lastAccessedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_short_term_chat_user ON ShortTermChat(userId);
         CREATE INDEX IF NOT EXISTS idx_short_term_chat_session ON ShortTermChat(sessionId);
         CREATE INDEX IF NOT EXISTS idx_short_term_chat_project ON ShortTermChat(projectId);
+        CREATE INDEX IF NOT EXISTS idx_short_term_chat_priority ON ShortTermChat(priority DESC);
 
         -- Long-Term Memory (75%+ similarity required)
         CREATE TABLE IF NOT EXISTS LongTermMemory (
@@ -364,16 +372,27 @@ export const initSqlite = () => {
             keywords TEXT DEFAULT '[]',
             entities TEXT DEFAULT '[]',
             similarity REAL DEFAULT 0,
+            -- Priority/importance with time decay
+            priority REAL DEFAULT 0.5,
+            accessCount INTEGER DEFAULT 1,
+            lastAccessedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             -- References to other memory entities
             referencedTasks TEXT DEFAULT '[]',
             referencedKeypoints TEXT DEFAULT '[]',
             referencedEntities TEXT DEFAULT '[]',
             referencedProjects TEXT DEFAULT '[]',
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            -- Linked sessions for cross-session context
+            linkedSessions TEXT DEFAULT '[]',
+            -- For incremental summarization
+            parentSummaryId TEXT,
+            isIncremental INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_long_term_user ON LongTermMemory(userId);
         CREATE INDEX IF NOT EXISTS idx_long_term_project ON LongTermMemory(projectId);
         CREATE INDEX IF NOT EXISTS idx_long_term_similarity ON LongTermMemory(similarity DESC);
+        CREATE INDEX IF NOT EXISTS idx_long_term_priority ON LongTermMemory(priority DESC);
+        CREATE INDEX IF NOT EXISTS idx_long_term_access ON LongTermMemory(lastAccessedAt DESC);
 
         -- Session Summary (1 summary per N chats)
         CREATE TABLE IF NOT EXISTS SessionSummary (
@@ -1504,9 +1523,229 @@ export const updateChatSummary = (
 export const getLongTermMemoryStats = (userId: string) => {
     const total = db.prepare(`SELECT COUNT(*) as count FROM LongTermMemory WHERE userId = ?`).get(userId) as { count: number };
     const avgSimilarity = db.prepare(`SELECT AVG(similarity) as avg FROM LongTermMemory WHERE userId = ?`).get(userId) as { avg: number };
+    const avgPriority = db.prepare(`SELECT AVG(priority) as avg FROM LongTermMemory WHERE userId = ?`).get(userId) as { avg: number };
     
     return {
         totalMemories: total?.count || 0,
-        averageSimilarity: avgSimilarity?.avg || 0
+        averageSimilarity: avgSimilarity?.avg || 0,
+        averagePriority: avgPriority?.avg || 0.5
     };
+};
+
+// Priority and time-decay functions
+export const updateMemoryPriority = (memoryId: string, delta: number) => {
+    db.prepare(`UPDATE LongTermMemory SET priority = MIN(1.0, MAX(0.1, priority + ?)), accessCount = accessCount + 1, lastAccessedAt = CURRENT_TIMESTAMP WHERE id = ?`)
+        .run(delta, memoryId);
+    return { success: true };
+};
+
+export const calculateTimeDecayPriority = (createdAt: string, decayDays: number = 30): number => {
+    const created = new Date(createdAt);
+    const now = new Date();
+    const daysOld = (now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24);
+    const decayFactor = Math.max(0.1, 1 - (daysOld / decayDays));
+    return Math.round(decayFactor * 100) / 100;
+};
+
+export const applyTimeDecay = (userId: string, decayDays: number = 30) => {
+    const memories = db.prepare(`SELECT id, createdAt, priority FROM LongTermMemory WHERE userId = ?`).all(userId) as any[];
+    memories.forEach(m => {
+        const newPriority = calculateTimeDecayPriority(m.createdAt, decayDays);
+        db.prepare(`UPDATE LongTermMemory SET priority = ? WHERE id = ?`).run(newPriority, m.id);
+    });
+    return { processed: memories.length };
+};
+
+// Cross-session linking
+export const linkMemoryToSession = (memoryId: string, sessionId: string) => {
+    const mem = db.prepare(`SELECT linkedSessions FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    if (!mem) return { success: false };
+    
+    const sessions = parseJson(mem.linkedSessions);
+    if (!sessions.includes(sessionId)) {
+        sessions.push(sessionId);
+        db.prepare(`UPDATE LongTermMemory SET linkedSessions = ? WHERE id = ?`).run(ensureJson(sessions), memoryId);
+    }
+    return { success: true };
+};
+
+export const findCrossSessionMemories = (
+    userId: string,
+    currentSessionId: string,
+    query: string,
+    threshold: number = 60
+) => {
+    const pattern = `%${query}%`;
+    const memories = db.prepare(`
+        SELECT * FROM LongTermMemory 
+        WHERE userId = ? 
+        AND sessionId != ?
+        AND (userQuery LIKE ? OR userSummary LIKE ? OR combo LIKE ?)
+    `).all(userId, currentSessionId, pattern, pattern, pattern) as any[];
+    
+    // Calculate similarity for each
+    return memories.map(r => {
+        const combined = (r.userQuery || "") + " " + (r.userSummary || "") + " " + (r.combo || "");
+        const similarity = calculateFuzzySimilarity(query, combined);
+        
+        // Check if already linked
+        const linked = parseJson(r.linkedSessions || "[]");
+        const isLinked = linked.includes(currentSessionId);
+        
+        return { ...r, similarity, isLinked, source: "cross_session" };
+    }).filter(r => r.similarity >= threshold);
+};
+
+// Auto-cleanup old memories
+export const cleanupOldMemories = (userId: string, daysOld: number = 90, keepPinned: boolean = true) => {
+    const cutoffDate = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000).toISOString();
+    
+    let sql = `DELETE FROM LongTermMemory WHERE userId = ? AND createdAt < ?`;
+    const params: any[] = [userId, cutoffDate];
+    
+    if (keepPinned) {
+        sql += ` AND isPinned = 0`;
+    }
+    
+    const result = db.prepare(sql).run(...params);
+    
+    return { deleted: result.changes };
+};
+
+// Memory deduplication
+export const findDuplicateMemories = (userId: string, similarityThreshold: number = 90) => {
+    const memories = db.prepare(`SELECT id, userQuery, userSummary, combo FROM LongTermMemory WHERE userId = ?`).all(userId) as any[];
+    
+    const duplicates: any[] = [];
+    const checked = new Set<string>();
+    
+    for (let i = 0; i < memories.length; i++) {
+        if (checked.has(memories[i].id)) continue;
+        
+        for (let j = i + 1; j < memories.length; j++) {
+            if (checked.has(memories[j].id)) continue;
+            
+            const combined1 = (memories[i].userQuery || "") + " " + (memories[i].userSummary || "");
+            const combined2 = (memories[j].userQuery || "") + " " + (memories[j].userSummary || "");
+            const similarity = calculateFuzzySimilarity(combined1, combined2);
+            
+            if (similarity >= similarityThreshold) {
+                duplicates.push({
+                    original: memories[i].id,
+                    duplicate: memories[j].id,
+                    similarity: Math.round(similarity)
+                });
+                checked.add(memories[j].id);
+            }
+        }
+    }
+    
+    return duplicates;
+};
+
+export const mergeDuplicateMemories = (originalId: string, duplicateId: string) => {
+    const dup = db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(duplicateId) as any;
+    if (!dup) return { success: false };
+    
+    // Merge: keep original, mark as merged
+    const orig = db.prepare(`SELECT linkedSessions FROM LongTermMemory WHERE id = ?`).get(originalId) as any;
+    if (orig) {
+        const origSessions = parseJson(orig.linkedSessions || "[]");
+        const dupSessions = parseJson(dup.linkedSessions || "[]");
+        const mergedSessions = [...new Set([...origSessions, ...dupSessions])];
+        
+        db.prepare(`UPDATE LongTermMemory SET linkedSessions = ?, accessCount = accessCount + ? WHERE id = ?`)
+            .run(ensureJson(mergedSessions), dup.accessCount || 1, originalId);
+    }
+    
+    // Mark duplicate as merged (keep for reference)
+    db.prepare(`UPDATE LongTermMemory SET userQuery = '[MERGED] ' || userQuery WHERE id = ?`).run(duplicateId);
+    
+    return { success: true };
+};
+
+// Context window optimization
+export const getOptimizedContext = (
+    userId: string,
+    sessionId: string,
+    maxTokens: number = 8000,
+    overlap: number = 3
+) => {
+    const config = getMemoryConfig();
+    const charsPerToken = 4;
+    const maxChars = maxTokens * charsPerToken;
+    
+    // Get session summaries (high value, compressed)
+    const summaries = getSessionSummaries(userId, sessionId);
+    
+    // Get recent short-term chats
+    const recentChats = getShortTermChats(userId, sessionId, undefined, overlap);
+    
+    // Build context with priority
+    let context = "";
+    let totalChars = 0;
+    
+    // Add summaries first (most compressed)
+    for (const s of summaries.reverse()) {
+        const text = `## Summary ${s.summaryIndex}\n${s.userSummary}\n${s.agentSummary}\n`;
+        if (totalChars + text.length > maxChars) break;
+        context = text + context;
+        totalChars += text.length;
+    }
+    
+    // Add recent chats
+    for (const c of recentChats.reverse()) {
+        const text = `Q: ${c.userQuery.slice(0, 200)}\nA: ${c.agentResponse.slice(0, 300)}\n`;
+        if (totalChars + text.length > maxChars) break;
+        context += text;
+        totalChars += text.length;
+    }
+    
+    return {
+        context: context.slice(-maxChars),
+        tokens: Math.ceil(totalChars / charsPerToken),
+        summariesUsed: summaries.length,
+        chatsUsed: recentChats.length
+    };
+};
+
+// Incremental summarization
+export const createIncrementalSummary = (
+    userId: string,
+    projectId: string | null,
+    sessionId: string,
+    parentSummaryId: string | null,
+    userSummary: string,
+    agentSummary: string,
+    combo: string,
+    chatCount: number
+) => {
+    const id = `inc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    
+    db.prepare(`INSERT INTO LongTermMemory 
+        (id, userId, projectId, sessionId, userQuery, userSummary, agentResponse, agentSummary, combo, isIncremental, parentSummaryId, priority) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+        .run(id, userId, projectId, sessionId, `Incremental summary #${chatCount}`, userSummary, agentSummary, combo, parentSummaryId, 0.6);
+    
+    // Create session summary too
+    const summaryId = `ss_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    db.prepare(`INSERT INTO SessionSummary 
+        (id, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(summaryId, userId, projectId, sessionId, chatCount, userSummary, agentSummary, combo, chatCount);
+    
+    return { id, type: "incremental" };
+};
+
+export const getMemoryById = (memoryId: string) => {
+    return db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(memoryId);
+};
+
+export const pinMemory = (memoryId: string, pinned: boolean = true) => {
+    db.prepare(`UPDATE LongTermMemory SET isPinned = ? WHERE id = ?`).run(pinned ? 1 : 0, memoryId);
+    return { success: true };
+};
+
+export const getPinnedMemories = (userId: string) => {
+    return db.prepare(`SELECT * FROM LongTermMemory WHERE userId = ? AND isPinned = 1 ORDER BY createdAt DESC`).all(userId);
 };

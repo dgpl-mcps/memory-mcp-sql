@@ -15,7 +15,20 @@ import {
     listEntities,
     listProjects,
     getProject,
-    getTask
+    getTask,
+    updateMemoryPriority,
+    applyTimeDecay,
+    linkMemoryToSession,
+    findCrossSessionMemories,
+    cleanupOldMemories,
+    findDuplicateMemories,
+    mergeDuplicateMemories,
+    getOptimizedContext,
+    createIncrementalSummary,
+    pinMemory,
+    getPinnedMemories,
+    getMemoryById,
+    db
 } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 
@@ -749,6 +762,329 @@ export const smartMemoryTools = [
                 
                 return {
                     content: [{ type: "text", text: `Batch stored: ${chats.length} chats\nTotal in session: ${chatCount}${summarizeResult ? `\nAuto-summarized to long-term` : ''}` }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "boost_memory_priority",
+        description: "Boost or reduce priority of a long-term memory. Higher priority = more likely to be retrieved.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string", description: "Memory ID to adjust" },
+                delta: { type: "number", description: "Change in priority (-0.5 to +0.5)", default: 0.1 }
+            },
+            required: ["memoryId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId: z.string().min(1),
+                    delta: z.number().min(-0.5).max(0.5).default(0.1)
+                });
+                const { memoryId, delta } = validatePayload(schema, args);
+                
+                updateMemoryPriority(memoryId, delta);
+                
+                return { content: [{ type: "text", text: `Memory ${memoryId} priority adjusted by ${delta > 0 ? '+' : ''}${delta}` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "link_cross_session_context",
+        description: "Link current session to relevant memories from other sessions for better context.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                sessionId: { type: "string", description: "Current session ID" },
+                query: { type: "string", description: "Search query to find related memories" }
+            },
+            required: ["userId", "sessionId", "query"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    sessionId: z.string().min(1),
+                    query: z.string().min(1)
+                });
+                const { userId, projectId, sessionId, query } = validatePayload(schema, args);
+                
+                const config = getMemoryConfig();
+                const crossSession = findCrossSessionMemories(userId, sessionId, query, config.CROSS_SESSION_THRESHOLD);
+                
+                if (crossSession.length === 0) {
+                    return { content: [{ type: "text", text: "No cross-session memories found to link." }] };
+                }
+                
+                // Auto-link top results
+                const linked = crossSession.slice(0, 3).map(m => {
+                    linkMemoryToSession(m.id, sessionId);
+                    return m.id;
+                });
+                
+                return {
+                    content: [{ type: "text", text: `Linked ${linked.length} cross-session memories:\n${linked.join("\n")}` }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "optimize_context_window",
+        description: "Get optimized context for current session within token limit.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                sessionId: { type: "string", description: "Session ID" },
+                maxTokens: { type: "number", description: "Max tokens (default 8000)", default: 8000 }
+            },
+            required: ["userId", "sessionId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    userId: z.string().min(1),
+                    sessionId: z.string().min(1),
+                    maxTokens: z.number().default(8000)
+                });
+                const { userId, sessionId, maxTokens } = validatePayload(schema, args);
+                
+                const config = getMemoryConfig();
+                const result = getOptimizedContext(userId, sessionId, maxTokens, config.CONTEXT_OVERLAP);
+                
+                return {
+                    content: [{ type: "text", text: JSON.stringify({
+                        tokens: result.tokens,
+                        summariesUsed: result.summariesUsed,
+                        chatsUsed: result.chatsUsed,
+                        contextPreview: result.context.slice(0, 500) + "..."
+                    }, null, 2) }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "cleanup_old_memories",
+        description: "Clean up memories older than specified days. Pinned memories are preserved.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                daysOld: { type: "number", description: "Delete memories older than this (default 90)", default: 90 },
+                dryRun: { type: "boolean", description: "Preview what would be deleted without actually deleting", default: false }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    userId: z.string().min(1),
+                    daysOld: z.number().default(90),
+                    dryRun: z.boolean().default(false)
+                });
+                const { userId, daysOld, dryRun } = validatePayload(schema, args);
+                
+                if (dryRun) {
+                    const cutoff = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000).toISOString();
+                    const count = db.prepare(`SELECT COUNT(*) as c FROM LongTermMemory WHERE userId = ? AND createdAt < ? AND isPinned = 0`).get(userId, cutoff) as { c: number };
+                    return { content: [{ type: "text", text: `Would delete ${count?.c || 0} memories older than ${daysOld} days` }] };
+                }
+                
+                const result = cleanupOldMemories(userId, daysOld);
+                
+                return { content: [{ type: "text", text: `Deleted ${result.deleted} old memories (older than ${daysOld} days, pinned preserved)` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "find_and_merge_duplicates",
+        description: "Find similar long-term memories and optionally merge them.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                threshold: { type: "number", description: "Similarity threshold (default 90%)", default: 90 },
+                autoMerge: { type: "boolean", description: "Auto-merge duplicates", default: false }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    userId: z.string().min(1),
+                    threshold: z.number().default(90),
+                    autoMerge: z.boolean().default(false)
+                });
+                const { userId, threshold, autoMerge } = validatePayload(schema, args);
+                
+                const duplicates = findDuplicateMemories(userId, threshold);
+                
+                if (duplicates.length === 0) {
+                    return { content: [{ type: "text", text: "No duplicate memories found." }] };
+                }
+                
+                let merged = 0;
+                if (autoMerge) {
+                    for (const dup of duplicates) {
+                        mergeDuplicateMemories(dup.original, dup.duplicate);
+                        merged++;
+                    }
+                }
+                
+                return {
+                    content: [{ type: "text", text: JSON.stringify({
+                        found: duplicates.length,
+                        merged: autoMerge ? merged : 0,
+                        duplicates: duplicates.slice(0, 5).map(d => ({
+                            original: d.original.slice(0, 20),
+                            duplicate: d.duplicate.slice(0, 20),
+                            similarity: `${d.similarity}%`
+                        }))
+                    }, null, 2) }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "pin_memory",
+        description: "Pin or unpin a memory so it's preserved during cleanup and prioritized.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string", description: "Memory ID" },
+                pinned: { type: "boolean", description: "Pin status", default: true }
+            },
+            required: ["memoryId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId: z.string().min(1),
+                    pinned: z.boolean().default(true)
+                });
+                const { memoryId, pinned } = validatePayload(schema, args);
+                
+                pinMemory(memoryId, pinned);
+                
+                return { content: [{ type: "text", text: `Memory ${pinned ? 'pinned' : 'unpinned'}` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "list_pinned_memories",
+        description: "List all pinned memories that won't be auto-cleaned.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({ userId: z.string().min(1) });
+                const { userId } = validatePayload(schema, args);
+                
+                const pinned = getPinnedMemories(userId) as any[];
+                
+                return {
+                    content: [{ type: "text", text: JSON.stringify({
+                        total: pinned.length,
+                        memories: pinned.map((p: any) => ({
+                            id: p.id,
+                            query: p.userQuery?.slice(0, 50),
+                            summary: p.userSummary?.slice(0, 80),
+                            created: p.createdAt
+                        }))
+                    }, null, 2) }]
+                };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "apply_time_decay",
+        description: "Apply time-decay to memory priorities based on age.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string", description: "User ID" },
+                decayDays: { type: "number", description: "Full decay after days (default 30)", default: 30 }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    userId: z.string().min(1),
+                    decayDays: z.number().default(30)
+                });
+                const { userId, decayDays } = validatePayload(schema, args);
+                
+                const result = applyTimeDecay(userId, decayDays);
+                
+                return { content: [{ type: "text", text: `Time decay applied to ${result.processed} memories` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+    {
+        name: "get_memory_details",
+        description: "Get detailed information about a specific memory.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string", description: "Memory ID" }
+            },
+            required: ["memoryId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({ memoryId: z.string().min(1) });
+                const { memoryId } = validatePayload(schema, args);
+                
+                const memory = getMemoryById(memoryId) as any;
+                
+                if (!memory) {
+                    return { isError: true, content: [{ type: "text", text: "Memory not found" }] };
+                }
+                
+                return {
+                    content: [{ type: "text", text: JSON.stringify({
+                        id: memory.id,
+                        userQuery: memory.userQuery,
+                        userSummary: memory.userSummary,
+                        agentSummary: memory.agentSummary,
+                        combo: memory.combo?.slice(0, 200),
+                        priority: memory.priority,
+                        isPinned: memory.isPinned,
+                        accessCount: memory.accessCount,
+                        lastAccessed: memory.lastAccessedAt,
+                        created: memory.createdAt,
+                        references: {
+                            tasks: JSON.parse(memory.referencedTasks || "[]"),
+                            keypoints: JSON.parse(memory.referencedKeypoints || "[]")
+                        },
+                        linkedSessions: JSON.parse(memory.linkedSessions || "[]")
+                    }, null, 2) }]
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
