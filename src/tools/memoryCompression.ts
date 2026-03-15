@@ -55,6 +55,105 @@ function summarize(text: string, max = 400): string {
     return s[0] + " " + s[s.length-1].slice(0, max - s[0].length - 5) + "...";
 }
 
+// Memory completeness score - how complete is this memory?
+function completenessScore(memory: any): number {
+    let score = 0;
+    const fields = ['userQuery', 'userSummary', 'agentResponse', 'agentSummary', 'combo', 'referencedTasks', 'referencedEntities'];
+    fields.forEach(f => {
+        if (memory[f] && (typeof memory[f] !== 'string' || memory[f].length > 0)) score++;
+    });
+    return Math.round((score / fields.length) * 100);
+}
+
+// Smart context trimming - preserve important parts when truncating
+function smartTrim(context: string, maxChars: number): string {
+    if (context.length <= maxChars) return context;
+    
+    // Try to cut at sentence boundary
+    const sentences = context.split(/[.!?]\s+/);
+    let result = "";
+    for (const s of sentences) {
+        if (result.length + s.length + 2 > maxChars) break;
+        result += s + ". ";
+    }
+    
+    // If too little, cut at word boundary
+    if (result.length < maxChars * 0.5) {
+        const words = context.split(/\s+/);
+        result = "";
+        for (const w of words) {
+            if (result.length + w.length + 1 > maxChars) break;
+            result += w + " ";
+        }
+    }
+    
+    return result.trim() + (result.length < context.length ? "..." : "");
+}
+
+// Conversation flow analysis
+function analyzeFlow(chats: any[]): { type: string; summary: string; complexity: number } {
+    if (!chats.length) return { type: "empty", summary: "No conversation", complexity: 0 };
+    
+    const intents = chats.map(c => detectIntent(c.userQuery || ''));
+    const questionCount = intents.filter(i => i === 'question').length;
+    const errorCount = intents.filter(i => i === 'error').length;
+    const successCount = intents.filter(i => i === 'success').length;
+    
+    let type = "general";
+    if (errorCount > questionCount && errorCount > 0) type = "debugging";
+    else if (questionCount > chats.length * 0.6) type = "learning";
+    else if (successCount > 0 && type === "general") type = "progress";
+    
+    const complexity = Math.min(100, Math.round((intents.filter(i => ['command','planning','learning'].includes(i)).length / Math.max(1, intents.length) * 100)));
+    
+    const summary = `${chats.length} messages. ${questionCount} questions, ${errorCount} issues, ${successCount} completions.`;
+    
+    return { type, summary, complexity };
+}
+
+// Extract actionable items from memory
+function extractActionItems(text: string): string[] {
+    const items: string[] = [];
+    
+    // TODO/FIX/NOTE patterns
+    const patterns = [/TODO:\s*(.+)/gi, /FIX:\s*(.+)/gi, /NOTE:\s*(.+)/gi, /ACTION:\s*(.+)/gi];
+    patterns.forEach(p => {
+        const matches = text.matchAll(p);
+        for (const m of matches) items.push(m[1].trim().slice(0, 60));
+    });
+    
+    // Numbered action items
+    const numbered = text.match(/^\s*\d+[.)]\s*(.+)$/gm);
+    if (numbered) {
+        numbered.forEach(n => {
+            const clean = n.replace(/^\s*\d+[.)]\s*/, '').trim();
+            if (clean.length > 5 && clean.length < 80) items.push(clean);
+        });
+    }
+    
+    return [...new Set(items)].slice(0,5);
+}
+
+// Find related memories based on entities overlap
+function findRelatedByEntities(memory: any, allMemories: any[]): string[] {
+    const myEntities = new Set((memory.referencedEntities || []).concat(memory.referencedTasks || []).map((e: string) => e.toLowerCase()));
+    if (myEntities.size === 0) return [];
+    
+    const related: { id: string, overlap: number }[] = [];
+    
+    allMemories.forEach(m => {
+        if (m.id === memory.id) return;
+        const theirEntities = new Set((m.referencedEntities || []).concat(m.referencedTasks || []).map((e: string) => e.toLowerCase()));
+        
+        let overlap = 0;
+        myEntities.forEach(e => { if (theirEntities.has(e)) overlap++; });
+        
+        if (overlap > 0) related.push({ id: m.id, overlap });
+    });
+    
+    return related.sort((a, b) => b.overlap - a.overlap).slice(0, 3).map(r => r.id);
+}
+
 // Enhanced combo with intent and key entities
 function combo(user: string, agent: string, prog?: string): string {
     const intent = detectIntent(user);
@@ -234,8 +333,16 @@ export const memoryTools = [
                 
                 const chats = getShortTermChats(userId, sessionId, undefined, limit);
                 const summaries = getSessionSummaries(userId, sessionId);
+                const flow = analyzeFlow(chats);
                 
-                return { content: [{ type: "text", text: JSON.stringify({ chats: chats.length, summaries: summaries.length, recent: chats.reverse().map(c => ({ i: c.chatIndex, u: c.userQuery?.slice(0,60), a: c.agentResponse?.slice(0,80) })) }, null, 2) }] };
+                return { content: [{ type: "text", text: JSON.stringify({ 
+                    chats: chats.length, 
+                    summaries: summaries.length,
+                    flow: flow.type,
+                    complexity: flow.complexity + '%',
+                    summary: flow.summary,
+                    recent: chats.reverse().map(c => ({ i: c.chatIndex, u: c.userQuery?.slice(0,60), a: c.agentResponse?.slice(0,80) })) 
+                }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -397,6 +504,9 @@ export const memoryTools = [
                 const m = getMemoryById(memoryId) as any;
                 if (!m) return { isError: true, content: [{ type: "text", text: "Not found" }] };
                 
+                const completeness = completenessScore(m);
+                const actions = extractActionItems((m.userQuery||'') + ' ' + (m.agentResponse||''));
+                
                 return { content: [{ type: "text", text: JSON.stringify({
                     id: m.id,
                     query: m.userQuery,
@@ -405,7 +515,9 @@ export const memoryTools = [
                     priority: Math.round((m.priority||0.5)*100)+'%',
                     pinned: m.isPinned===1,
                     accesses: m.accessCount,
-                    created: m.createdAt
+                    created: m.createdAt,
+                    completeness: completeness + '%',
+                    actionItems: actions
                 }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -517,6 +629,50 @@ export const memoryTools = [
                 return { content: [{ type: "text", text: JSON.stringify({
                     totalMemories: recent.length,
                     insights
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 12. trim - smart context trimming for LLM
+    {
+        name: "memory_trim",
+        description: "Smart context trimming - preserves important parts when reducing size.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                sessionId: { type: "string" },
+                maxChars: { type: "number", default: 3000 }
+            },
+            required: ["userId", "sessionId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({ userId: z.string().min(1), sessionId: z.string().min(1), maxChars: z.number().default(3000) });
+                const { userId, sessionId, maxChars } = validatePayload(schema, args);
+                
+                const summaries = getSessionSummaries(userId, sessionId);
+                const chats = getShortTermChats(userId, sessionId, undefined, 10);
+                
+                let context = "## Session Summaries\n";
+                summaries.slice(-3).forEach((s: any) => { context += `- ${s.userSummary}\n`; });
+                
+                context += "\n## Recent Messages\n";
+                chats.reverse().forEach((c: any) => {
+                    context += `Q: ${smartTrim(c.userQuery||'', 100)}\n`;
+                    context += `A: ${smartTrim(c.agentResponse||'', 150)}\n\n`;
+                });
+                
+                const trimmed = smartTrim(context, maxChars);
+                
+                return { content: [{ type: "text", text: JSON.stringify({
+                    original: context.length,
+                    trimmed: trimmed.length,
+                    ratio: Math.round((1 - trimmed.length/context.length) * 100) + '%',
+                    text: trimmed
                 }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
