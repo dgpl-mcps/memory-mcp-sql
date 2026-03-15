@@ -5,17 +5,39 @@ import {
     summarizeAndMoveToLongTerm, searchShortTermMemory, searchLongTermMemory,
     getSessionSummaries, clearShortTermMemory, getOptimizedContext,
     updateMemoryPriority, pinMemory, getMemoryById, getLongTermMemoryStats,
-    cleanupOldMemories, findCrossSessionMemories, db
+    cleanupOldMemories, findCrossSessionMemories, db, createRelation, getRelations
 } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 
 const STOP_WORDS = new Set(['the','a','an','and','or','but','is','are','was','were','be','been','have','has','had','do','does','did','will','would','could','should','to','of','in','for','on','with','at','by','from','this','that','what','which','who','just','also','now','about']);
+
+const INTENT_TYPES = ['question', 'request', 'command', 'statement', 'error', 'success', 'learning', 'planning'];
+const ACTION_WORDS = new Set(['create','update','delete','fix','add','build','deploy','test','merge','review','analyze','implement','refactor','configure','setup','run','push','pull']);
 
 function extractKeywords(text: string): string[] {
     const words = text.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w => w.length > 3 && !STOP_WORDS.has(w));
     const freq: Record<string, number> = {};
     words.forEach(w => freq[w] = (freq[w] || 0) + 1);
     return Object.entries(freq).sort((a,b) => b[1] - a[1]).slice(0,8).map(x => x[0]);
+}
+
+// Smart intent detection
+function detectIntent(userMsg: string): string {
+    const first = userMsg.toLowerCase().split(/\s+/)[0];
+    if (['what','why','how','when','where','who','can','could','would','should','is','are','do','does'].includes(first)) return 'question';
+    if (ACTION_WORDS.has(first)) return 'command';
+    if (/error|fail|exception|bug/i.test(userMsg)) return 'error';
+    if (/success|done|completed|finished/i.test(userMsg)) return 'success';
+    if (/learn|realize|discover|understand/i.test(userMsg)) return 'learning';
+    if (/plan|will|should|might|consider/i.test(userMsg)) return 'planning';
+    return 'statement';
+}
+
+// Extract important entities/names
+function extractEntities(text: string): string[] {
+    const camel = text.match(/[A-Z][a-z]+(?:[A-Z][a-z]+)*/g) || [];
+    const numbers = text.match(/#\d+/g) || [];
+    return [...camel, ...numbers].slice(0,5).map(x => x.toLowerCase());
 }
 
 function extractRefs(q: string) {
@@ -25,6 +47,7 @@ function extractRefs(q: string) {
     return { tasks: [...new Set(tasks)], projects: [...new Set(projects)], keypoints: [...new Set(keypoints)] };
 }
 
+// Smart summary - captures more context
 function summarize(text: string, max = 400): string {
     if (text.length <= max) return text;
     const s = text.split(/[.!?]+/).filter(x => x.trim().length > 10);
@@ -32,8 +55,40 @@ function summarize(text: string, max = 400): string {
     return s[0] + " " + s[s.length-1].slice(0, max - s[0].length - 5) + "...";
 }
 
+// Enhanced combo with intent and key entities
 function combo(user: string, agent: string, prog?: string): string {
-    return `## Intent\n${user}\n\n## Response\n${agent}${prog ? `\n\n## Progress\n${prog}` : ''}`;
+    const intent = detectIntent(user);
+    const entities = extractEntities(user).slice(0,3);
+    return `## Intent [${intent}]\n${user}\n\n## Response\n${agent}${prog ? `\n\n## Progress\n${prog}` : ''}${entities.length ? `\n\n## Entities\n${entities.join(', ')}` : ''}`;
+}
+
+// Calculate relevance with multiple factors
+function calculateRelevance(query: string, memory: any): number {
+    const q = query.toLowerCase();
+    const m = ((memory.userQuery||'') + ' ' + (memory.userSummary||'') + ' ' + (memory.agentSummary||'')).toLowerCase();
+    
+    // Exact match bonus
+    if (m.includes(q)) return 100;
+    
+    const qWords = q.split(/\s+/).filter(w => w.length > 2);
+    const mWords = m.split(/\s+/).filter(w => w.length > 2);
+    
+    if (!qWords.length || !mWords.length) return 0;
+    
+    // Word overlap
+    const overlap = qWords.filter(w => m.includes(w)).length;
+    const baseScore = (overlap / qWords.length) * 80;
+    
+    // Position bonus - earlier mentions = more relevant
+    const firstMatch = qWords.findIndex(w => m.includes(w));
+    const posBonus = firstMatch >= 0 ? Math.max(0, 15 - firstMatch * 2) : 0;
+    
+    // Intent match bonus
+    const memIntent = detectIntent(memory.userQuery||'');
+    const queryIntent = detectIntent(query);
+    const intentBonus = memIntent === queryIntent ? 10 : 0;
+    
+    return Math.min(100, baseScore + posBonus + intentBonus);
 }
 
 // =============================================
@@ -69,10 +124,11 @@ export const memoryTools = [
                 
                 const cfg = getMemoryConfig();
                 const refs = extractRefs(userMessage);
+                const entities = extractEntities(userMessage);
                 const uSum = summarize(userMessage, cfg.SUMMARY_MAX_LENGTH);
                 const aSum = summarize(agentMessage, cfg.SUMMARY_MAX_LENGTH);
                 
-                const result = addShortTermChat(userId, projectId || null, sessionId, userMessage, agentMessage, uSum, aSum, combo(uSum, aSum, progress), refs.tasks, refs.keypoints, [], refs.projects);
+                const result = addShortTermChat(userId, projectId || null, sessionId, userMessage, agentMessage, uSum, aSum, combo(uSum, aSum, progress), refs.tasks, refs.keypoints, entities, refs.projects);
                 
                 const count = getSessionChatCount(sessionId);
                 let note = `✓ Stored [${result.chatIndex}]`;
@@ -121,13 +177,13 @@ export const memoryTools = [
                 const cfg = getMemoryConfig();
                 const results: any[] = [];
                 
-                // Short-term (low threshold)
+                // Short-term (low threshold) - use enhanced relevance
                 const st = searchShortTermMemory(userId, query, scope === "session" ? sessionId : undefined, projectId || null, cfg.SHORT_TERM_THRESHOLD);
-                results.push(...st.map(r => ({ ...r, src: "short-term", score: Math.round(r.similarity) })));
+                results.push(...st.map(r => ({ ...r, src: "short-term", score: calculateRelevance(query, r) })));
                 
-                // Long-term (high threshold)
+                // Long-term (high threshold) - use enhanced relevance
                 const lt = searchLongTermMemory(userId, query, projectId || null, 50);
-                results.push(...lt.map(r => ({ ...r, src: "long-term", score: Math.round(r.similarity) })));
+                results.push(...lt.map(r => ({ ...r, src: "long-term", score: calculateRelevance(query, r) })));
                 
                 // Cross-session
                 if (scope === "all" && sessionId) {
@@ -382,10 +438,86 @@ export const memoryTools = [
                 const cfg = getMemoryConfig();
                 for (const c of conversations) {
                     const refs = extractRefs(c.user);
-                    addShortTermChat(userId, projectId||null, sessionId, c.user, c.agent, summarize(c.user,cfg.SUMMARY_MAX_LENGTH), summarize(c.agent,cfg.SUMMARY_MAX_LENGTH), combo(summarize(c.user),summarize(c.agent)), refs.tasks, refs.keypoints, [], refs.projects);
+                    const intent = detectIntent(c.user);
+                    const entities = extractEntities(c.user);
+                    addShortTermChat(userId, projectId||null, sessionId, c.user, c.agent, summarize(c.user,cfg.SUMMARY_MAX_LENGTH), summarize(c.agent,cfg.SUMMARY_MAX_LENGTH), combo(summarize(c.user),summarize(c.agent)), refs.tasks, refs.keypoints, entities, refs.projects);
                 }
                 
                 return { content: [{ type: "text", text: `Stored ${conversations.length} conversations` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 11. insights - extract key learnings from memory
+    {
+        name: "memory_insights",
+        description: "Extract key learnings, patterns, and insights from memory.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                projectId: { type: "string" },
+                focus: { type: "string", enum: ["questions", "errors", "progress", "all"], default: "all" }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    focus: z.enum(["questions", "errors", "progress", "all"]).default("all")
+                });
+                const { userId, projectId, focus } = validatePayload(schema, args);
+                
+                // Get recent long-term memories
+                const all = searchLongTermMemory(userId, "", projectId || null, 0);
+                const recent = all.slice(0, 50);
+                
+                const insights: any = { questions: [], errors: [], progress: [], patterns: [] };
+                
+                recent.forEach((m: any) => {
+                    const txt = ((m.userQuery||'') + ' ' + (m.agentResponse||'')).toLowerCase();
+                    
+                    // Questions asked
+                    if (m.userQuery?.match(/^(what|why|how|when|where|who|is|are|can|do)/i)) {
+                        insights.questions.push(m.userQuery?.slice(0,80));
+                    }
+                    
+                    // Errors/issues
+                    if (/error|fail|bug|issue|problem|exception/i.test(txt)) {
+                        const taskMatch = m.userQuery?.match(/#(\d+)/);
+                        insights.errors.push({ task: taskMatch?.[1], issue: m.userQuery?.slice(0,60) });
+                    }
+                    
+                    // Progress/completion
+                    if (/done|completed|finished|success|fixed|deployed/i.test(txt)) {
+                        insights.progress.push(m.userSummary || m.userQuery?.slice(0,60));
+                    }
+                });
+                
+                // Find patterns - most common keywords
+                const keywordCounts: Record<string, number> = {};
+                recent.forEach((m: any) => {
+                    const kw = extractKeywords(m.userQuery || '');
+                    kw.forEach(k => keywordCounts[k] = (keywordCounts[k] || 0) + 1);
+                });
+                
+                insights.patterns = Object.entries(keywordCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 10)
+                    .map(([word, count]) => ({ word, mentions: count }));
+                
+                // Filter based on focus
+                if (focus !== "all") {
+                    const filtered = { [focus]: insights[focus], patterns: insights.patterns };
+                    return { content: [{ type: "text", text: JSON.stringify(filtered, null, 2) }] };
+                }
+                
+                return { content: [{ type: "text", text: JSON.stringify({
+                    totalMemories: recent.length,
+                    insights
+                }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
