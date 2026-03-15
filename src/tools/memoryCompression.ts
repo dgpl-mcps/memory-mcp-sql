@@ -5,7 +5,14 @@ import {
     summarizeAndMoveToLongTerm, searchShortTermMemory, searchLongTermMemory,
     getSessionSummaries, clearShortTermMemory, getOptimizedContext,
     updateMemoryPriority, pinMemory, getMemoryById, getLongTermMemoryStats,
-    cleanupOldMemories, findCrossSessionMemories, db, createRelation, getRelations
+    cleanupOldMemories, findCrossSessionMemories, db, createRelation, getRelations,
+    findDuplicateMemories, mergeDuplicateMemories, linkMemoryToSession,
+    setMemoryTTL, removeMemoryTTL, cleanupExpiredMemories, getExpiringMemories,
+    searchMemoriesByDate, addMemoryTags, removeMemoryTags, searchMemoriesByTag, getMemoryTags,
+    voteMemory, getMemoryVotes, getMemoryVersions, bulkUpdatePriority, bulkAddTags,
+    bulkDelete, bulkPin, updateMemoryQuality, getHighQualityMemories, calculateQualityScore,
+    archiveMemory, unarchiveMemory, getArchivedMemories, createReminder, getPendingReminders,
+    completeReminder, deleteReminder, getUpcomingReminders, mergeMemories
 } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 
@@ -33,11 +40,14 @@ function detectIntent(userMsg: string): string {
     return 'statement';
 }
 
-// Extract important entities/names
+// Extract important entities/names (enhanced with URLs, emails, file paths)
 function extractEntities(text: string): string[] {
     const camel = text.match(/[A-Z][a-z]+(?:[A-Z][a-z]+)*/g) || [];
     const numbers = text.match(/#\d+/g) || [];
-    return [...camel, ...numbers].slice(0,5).map(x => x.toLowerCase());
+    const urls = text.match(/https?:\/\/[^\s]+/g) || [];
+    const emails = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+    const files = text.match(/(?:\/|\\)[a-zA-Z0-9_\-\.]+\.[a-zA-Z]{1,6}/g) || [];
+    return [...camel, ...numbers, ...urls.slice(0,2), ...emails.slice(0,2), ...files.slice(0,2)].slice(0,8).map(x => x.toLowerCase());
 }
 
 function extractRefs(q: string) {
@@ -154,6 +164,86 @@ function findRelatedByEntities(memory: any, allMemories: any[]): string[] {
     return related.sort((a, b) => b.overlap - a.overlap).slice(0, 3).map(r => r.id);
 }
 
+// Memory freshness score - recency + time decay
+function freshnessScore(createdAt: string, lastAccessed: string | null, decayDays: number = 30): number {
+    const created = new Date(createdAt).getTime();
+    const accessed = lastAccessed ? new Date(lastAccessed).getTime() : created;
+    const now = Date.now();
+    
+    const ageHours = (now - created) / (1000 * 60 * 60);
+    const accessedHours = (now - accessed) / (1000 * 60 * 60);
+    
+    // Base freshness from creation (decay over 30 days)
+    const ageScore = Math.max(10, 100 - (ageHours / (decayDays * 24) * 100));
+    
+    // Access bonus - recently accessed = more relevant
+    const accessBonus = accessedHours < 24 ? 20 : accessedHours < 168 ? 10 : 0;
+    
+    return Math.min(100, Math.round(ageScore + accessBonus));
+}
+
+// Query expansion - add related terms for better recall
+function expandQuery(query: string): string[] {
+    const expansions: Record<string, string[]> = {
+        'fix': ['bug', 'error', 'issue', 'problem'],
+        'create': ['add', 'new', 'build', 'implement'],
+        'update': ['change', 'modify', 'edit', 'refactor'],
+        'delete': ['remove', 'clear', 'drop', 'clean'],
+        'deploy': ['release', 'push', 'ship', 'publish'],
+        'test': ['verify', 'check', 'validate', 'QA'],
+        'debug': ['troubleshoot', 'error', 'issue', 'problem'],
+        'review': ['check', 'examine', 'audit', 'inspect'],
+        'question': ['how', 'what', 'why', 'when', 'where'],
+        'learn': ['understand', 'discover', 'figure', 'explore']
+    };
+    
+    const queryLower = query.toLowerCase();
+    const expanded = [query];
+    
+    Object.entries(expansions).forEach(([term, synonyms]) => {
+        if (queryLower.includes(term)) {
+            expanded.push(...synonyms);
+        }
+    });
+    
+    return [...new Set(expanded)];
+}
+
+// Suggest follow-up queries based on history
+function suggestQueries(recentQueries: string[]): string[] {
+    const suggestions: string[] = [];
+    
+    recentQueries.forEach(q => {
+        const lower = q.toLowerCase();
+        
+        // If asked about error, suggest fixes
+        if (/error|bug|issue|problem/i.test(lower)) {
+            suggestions.push('how to fix', 'solution for', 'debug steps');
+        }
+        
+        // If asked about creation, suggest next steps
+        if (/create|add|new build/i.test(lower)) {
+            suggestions.push('next steps', 'how to test', 'deployment');
+        }
+        
+        // If asked about project, suggest status
+        if (/project|progress|status/i.test(lower)) {
+            suggestions.push('update', 'completion', 'timeline');
+        }
+    });
+    
+    return [...new Set(suggestions)].slice(0, 5);
+}
+
+// Weighted priority - combines freshness + usage + manual priority
+function weightedPriority(memory: any): number {
+    const freshness = freshnessScore(memory.createdAt, memory.lastAccessedAt);
+    const usage = Math.min(30, (memory.accessCount || 1) * 5); // Up to 30% from usage
+    const manual = (memory.priority || 0.5) * 30; // Up to 30% manual
+    
+    return Math.round(freshness * 0.4 + usage + manual);
+}
+
 // Enhanced combo with intent and key entities
 function combo(user: string, agent: string, prog?: string): string {
     const intent = detectIntent(user);
@@ -188,6 +278,29 @@ function calculateRelevance(query: string, memory: any): number {
     const intentBonus = memIntent === queryIntent ? 10 : 0;
     
     return Math.min(100, baseScore + posBonus + intentBonus);
+}
+
+// Levenshtein distance for fuzzy matching
+function levenshtein(a: string, b: string): number {
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+    const matrix: number[][] = [];
+    for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+    for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+    for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+            if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j - 1] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j] + 1
+                );
+            }
+        }
+    }
+    return matrix[b.length][a.length];
 }
 
 // =============================================
@@ -231,6 +344,32 @@ export const memoryTools = [
                 
                 const count = getSessionChatCount(sessionId);
                 let note = `✓ Stored [${result.chatIndex}]`;
+
+                // Auto-link to related entities in knowledge graph
+                if (entities.length > 0 && refs.tasks.length > 0) {
+                    try {
+                        const allEntities = db.prepare(`SELECT id, name FROM Entities WHERE userId = ?`).all(userId) as any[];
+                        entities.forEach((entity: string) => {
+                            const matched = allEntities.find((e: any) => e.name.toLowerCase() === entity.toLowerCase());
+                            if (matched) {
+                                refs.tasks.forEach((taskId: string) => {
+                                    createRelation(userId, projectId || '', matched.id, taskId, 'mentioned_in', { sessionId, chatIndex: result.chatIndex });
+                                });
+                            }
+                        });
+                    } catch (e) { /* ignore graph errors */ }
+                }
+
+                // Auto-deduplicate check on long-term memories (every 10th chat)
+                if (count > 0 && count % 10 === 0) {
+                    try {
+                        const dups = findDuplicateMemories(userId, 85);
+                        if (dups.length > 0) {
+                            dups.forEach((d: any) => mergeDuplicateMemories(d.original, d.duplicate));
+                            note += ` | merged ${dups.length} duplicates`;
+                        }
+                    } catch (e) { /* ignore dedup errors */ }
+                }
                 
                 if (count > 0 && count % cfg.AUTO_SUMMARIZE_AFTER_CHATS === 0) {
                     const recent = getShortTermChats(userId, sessionId, projectId || null, cfg.AUTO_SUMMARIZE_AFTER_CHATS);
@@ -275,30 +414,53 @@ export const memoryTools = [
                 
                 const cfg = getMemoryConfig();
                 const results: any[] = [];
+
+                // Use query expansion for better recall
+                const expandedQueries = expandQuery(query);
                 
-                // Short-term (low threshold) - use enhanced relevance
-                const st = searchShortTermMemory(userId, query, scope === "session" ? sessionId : undefined, projectId || null, cfg.SHORT_TERM_THRESHOLD);
-                results.push(...st.map(r => ({ ...r, src: "short-term", score: calculateRelevance(query, r) })));
+                // Short-term (low threshold) - use enhanced relevance with expanded queries
+                for (const q of expandedQueries.slice(0, 3)) {
+                    const st = searchShortTermMemory(userId, q, scope === "session" ? sessionId : undefined, projectId || null, cfg.SHORT_TERM_THRESHOLD);
+                    results.push(...st.map(r => ({ ...r, src: "short-term", score: calculateRelevance(query, r), queryUsed: q })));
+                }
                 
                 // Long-term (high threshold) - use enhanced relevance
-                const lt = searchLongTermMemory(userId, query, projectId || null, 50);
-                results.push(...lt.map(r => ({ ...r, src: "long-term", score: calculateRelevance(query, r) })));
+                for (const q of expandedQueries.slice(0, 3)) {
+                    const lt = searchLongTermMemory(userId, q, projectId || null, 50);
+                    results.push(...lt.map(r => ({ ...r, src: "long-term", score: calculateRelevance(query, r), queryUsed: q })));
+                }
                 
                 // Cross-session
                 if (scope === "all" && sessionId) {
-                    const cs = findCrossSessionMemories(userId, sessionId, query, cfg.CROSS_SESSION_THRESHOLD);
-                    results.push(...cs.map(r => ({ ...r, src: "cross-session", score: Math.round(r.similarity) })));
+                    for (const q of expandedQueries.slice(0, 2)) {
+                        const cs = findCrossSessionMemories(userId, sessionId, q, cfg.CROSS_SESSION_THRESHOLD);
+                        results.push(...cs.map(r => ({ ...r, src: "cross-session", score: Math.round(r.similarity), queryUsed: q })));
+                    }
                 }
                 
-                if (results.length === 0) return { content: [{ type: "text", text: "No memories found." }] };
+                if (results.length === 0) return { content: [{ type: "text", text: "No memories found. Try different keywords." }] };
                 
                 // Dedupe and sort
                 const seen = new Set();
                 const uniq = results.filter(r => { if (seen.has(r.id+r.src)) return false; seen.add(r.id+r.src); return true; });
                 uniq.sort((a, b) => b.similarity - a.similarity);
+
+                // Auto-boost accessed memories (freshness + priority update)
+                const topResults = uniq.slice(0, 3);
+                for (const r of topResults) {
+                    if (r.src === "long-term" || r.src === "cross-session") {
+                        try {
+                            updateMemoryPriority(r.id, 0.05); // Small boost for being recalled
+                            if (sessionId && r.linkedSessions) {
+                                linkMemoryToSession(r.id, sessionId);
+                            }
+                        } catch (e) { /* ignore */ }
+                    }
+                }
                 
                 return { content: [{ type: "text", text: JSON.stringify({
                     found: uniq.length,
+                    expandedFrom: expandedQueries.slice(0, 3),
                     memories: uniq.slice(0,6).map(r => ({
                         from: r.src,
                         score: r.score + '%',
@@ -674,6 +836,805 @@ export const memoryTools = [
                     ratio: Math.round((1 - trimmed.length/context.length) * 100) + '%',
                     text: trimmed
                 }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 13. analytics - session-level analytics and insights
+    {
+        name: "memory_analytics",
+        description: "Get session-level analytics: topics, time spent, questions vs commands ratio, completion rate.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                sessionId: { type: "string" },
+                days: { type: "number", default: 7 }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    sessionId: z.string().optional(),
+                    days: z.number().default(7)
+                });
+                const { userId, sessionId, days } = validatePayload(schema, args);
+
+                const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+                
+                // Get chats for analysis
+                let chats: any[] = [];
+                if (sessionId) {
+                    chats = getShortTermChats(userId, sessionId, undefined, 100);
+                } else {
+                    const allChats = db.prepare(`SELECT * FROM ShortTermChat WHERE userId = ? AND createdAt > ? ORDER BY createdAt DESC LIMIT 100`).all(userId, cutoff) as any[];
+                    chats = allChats;
+                }
+
+                if (chats.length === 0) {
+                    return { content: [{ type: "text", text: JSON.stringify({ message: "No session data found", chats: 0 }, null, 2) }] };
+                }
+
+                // Analyze intents
+                const intents = chats.map(c => detectIntent(c.userQuery || ''));
+                const intentCounts: Record<string, number> = {};
+                intents.forEach(i => intentCounts[i] = (intentCounts[i] || 0) + 1);
+
+                // Extract top keywords
+                const allText = chats.map(c => c.userQuery + ' ' + c.agentResponse).join(' ');
+                const keywords = extractKeywords(allText).slice(0, 10);
+
+                // Calculate topics (entity clusters)
+                const entities = chats.flatMap(c => {
+                    try { return JSON.parse(c.referencedEntities || "[]"); } catch { return []; }
+                });
+                const entityCounts: Record<string, number> = {};
+                entities.forEach(e => entityCounts[e.toLowerCase()] = (entityCounts[e.toLowerCase()] || 0) + 1);
+                const topEntities = Object.entries(entityCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([e, c]) => ({ entity: e, count: c }));
+
+                // Session duration estimate
+                const firstChat = chats[chats.length - 1];
+                const lastChat = chats[0];
+                const durationMins = firstChat && lastChat ? Math.round((new Date(lastChat.createdAt).getTime() - new Date(firstChat.createdAt).getTime()) / 60000) : 0;
+
+                // Completion metrics
+                const successCount = intents.filter(i => i === 'success').length;
+                const commandCount = intents.filter(i => i === 'command').length;
+
+                return { content: [{ type: "text", text: JSON.stringify({
+                    period: { days, chats: chats.length },
+                    intentBreakdown: intentCounts,
+                    topKeywords: keywords,
+                    topEntities,
+                    estimatedDuration: durationMins + ' mins',
+                    completionRate: commandCount > 0 ? Math.round((successCount / commandCount) * 100) + '%' : 'N/A',
+                    questionRatio: Math.round((intentCounts['question'] || 0) / chats.length * 100) + '%'
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 14. export - export memories to JSON
+    {
+        name: "memory_export",
+        description: "Export memories to JSON. Includes long-term memories, session summaries, and optional short-term chats.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                projectId: { type: "string" },
+                includeShortTerm: { type: "boolean", default: false },
+                limit: { type: "number", default: 100 }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    includeShortTerm: z.boolean().default(false),
+                    limit: z.number().default(100)
+                });
+                const { userId, projectId, includeShortTerm, limit } = validatePayload(schema, args);
+
+                const longTerm = db.prepare(`SELECT * FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT ?`).all(userId, limit) as any[];
+                const summaries = db.prepare(`SELECT * FROM SessionSummary WHERE userId = ? ORDER BY createdAt DESC LIMIT 20`).all(userId) as any[];
+                
+                let shortTerm: any[] = [];
+                if (includeShortTerm) {
+                    shortTerm = db.prepare(`SELECT * FROM ShortTermChat WHERE userId = ? ORDER BY createdAt DESC LIMIT ?`).all(userId, limit) as any[];
+                }
+
+                const exportData = {
+                    exportedAt: new Date().toISOString(),
+                    userId,
+                    projectId: projectId || null,
+                    longTermMemoryCount: longTerm.length,
+                    sessionSummariesCount: summaries.length,
+                    shortTermChatsCount: shortTerm.length,
+                    longTermMemories: longTerm.map(m => ({
+                        id: m.id,
+                        query: m.userQuery,
+                        summary: m.userSummary,
+                        response: m.agentSummary,
+                        keywords: JSON.parse(m.keywords||"[]"),
+                        entities: JSON.parse(m.entities||"[]"),
+                        priority: m.priority,
+                        pinned: m.isPinned === 1,
+                        createdAt: m.createdAt
+                    })),
+                    sessionSummaries: summaries.map(s => ({
+                        id: s.id,
+                        sessionId: s.sessionId,
+                        summary: s.userSummary,
+                        chatCount: s.chatCount,
+                        createdAt: s.createdAt
+                    })),
+                    shortTermChats: shortTerm.map(c => ({
+                        id: c.id,
+                        sessionId: c.sessionId,
+                        query: c.userQuery,
+                        response: c.agentResponse,
+                        createdAt: c.createdAt
+                    }))
+                };
+
+                return { content: [{ type: "text", text: JSON.stringify(exportData, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 15. import - import memories from JSON
+    {
+        name: "memory_import",
+        description: "Import memories from JSON export. Merges with existing memories.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                projectId: { type: "string" },
+                importData: { type: "string", description: "JSON string from memory_export" }
+            },
+            required: ["userId", "importData"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    importData: z.string().min(10)
+                });
+                const { userId, projectId, importData } = validatePayload(schema, args);
+
+                const data = JSON.parse(importData);
+                let imported = { longTerm: 0, summaries: 0, shortTerm: 0 };
+
+                // Import long-term memories
+                if (data.longTermMemories && Array.isArray(data.longTermMemories)) {
+                    for (const m of data.longTermMemories) {
+                        try {
+                            const id = `ltm_imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+                            db.prepare(`INSERT INTO LongTermMemory 
+                                (id, userId, projectId, userQuery, userSummary, agentResponse, agentSummary, combo, keywords, entities, priority, isPinned, createdAt) 
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                                .run(id, userId, projectId || null, m.query, m.summary, m.response || '', m.summary || '', '', 
+                                    JSON.stringify(m.keywords || []), JSON.stringify(m.entities || []), m.priority || 0.5, m.pinned ? 1 : 0, m.createdAt || new Date().toISOString());
+                            imported.longTerm++;
+                        } catch (e) { /* skip duplicates */ }
+                    }
+                }
+
+                // Import session summaries
+                if (data.sessionSummaries && Array.isArray(data.sessionSummaries)) {
+                    for (const s of data.sessionSummaries) {
+                        try {
+                            const id = `ss_imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+                            db.prepare(`INSERT INTO SessionSummary 
+                                (id, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount, createdAt) 
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                                .run(id, userId, projectId || null, s.sessionId || 'imported', 0, s.summary, '', '', s.chatCount || 0, s.createdAt || new Date().toISOString());
+                            imported.summaries++;
+                        } catch (e) { /* skip */ }
+                    }
+                }
+
+                return { content: [{ type: "text", text: JSON.stringify({ success: true, imported }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 16. link - link related conversations/threads
+    {
+        name: "memory_link",
+        description: "Link two memories together as related. Creates explicit thread relationship.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId1: { type: "string" },
+                memoryId2: { type: "string" },
+                relationship: { type: "string", enum: ["related", "follows", "supersedes", "references"], default: "related" }
+            },
+            required: ["memoryId1", "memoryId2"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId1: z.string().min(1),
+                    memoryId2: z.string().min(1),
+                    relationship: z.enum(["related", "follows", "supersedes", "references"]).default("related")
+                });
+                const { memoryId1, memoryId2, relationship } = validatePayload(schema, args);
+
+                // Store as linked session (reuse existing field)
+                const m1 = db.prepare(`SELECT linkedSessions FROM LongTermMemory WHERE id = ?`).get(memoryId1) as any;
+                const m2 = db.prepare(`SELECT linkedSessions FROM LongTermMemory WHERE id = ?`).get(memoryId2) as any;
+
+                if (!m1 && !m2) return { isError: true, content: [{ type: "text", text: "One or both memories not found" }] };
+
+                if (m1) {
+                    const sessions = JSON.parse(m1.linkedSessions || "[]");
+                    if (!sessions.includes(memoryId2)) {
+                        sessions.push(`${relationship}:${memoryId2}`);
+                        db.prepare(`UPDATE LongTermMemory SET linkedSessions = ? WHERE id = ?`).run(JSON.stringify(sessions), memoryId1);
+                    }
+                }
+                if (m2) {
+                    const sessions = JSON.parse(m2.linkedSessions || "[]");
+                    if (!sessions.includes(memoryId1)) {
+                        sessions.push(`related:${memoryId1}`);
+                        db.prepare(`UPDATE LongTermMemory SET linkedSessions = ? WHERE id = ?`).run(JSON.stringify(sessions), memoryId2);
+                    }
+                }
+
+                return { content: [{ type: "text", text: `Linked ${memoryId1.slice(0,8)} ↔ ${memoryId2.slice(0,8)} as ${relationship}` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 17. set_ttl - set expiration on memory
+    {
+        name: "memory_set_ttl",
+        description: "Set time-to-live (expiration) on a memory. Pinned memories won't expire.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string" },
+                daysToLive: { type: "number", description: "Days until expiration. Use 0 to remove TTL." }
+            },
+            required: ["memoryId", "daysToLive"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId: z.string().min(1),
+                    daysToLive: z.number().min(0).max(365)
+                });
+                const { memoryId, daysToLive } = validatePayload(schema, args);
+
+                if (daysToLive === 0) {
+                    removeMemoryTTL(memoryId);
+                    return { content: [{ type: "text", text: "TTL removed (never expires)" }] };
+                }
+
+                const result = setMemoryTTL(memoryId, daysToLive);
+                return { content: [{ type: "text", text: `Set TTL: ${daysToLive} days (expires ${new Date(result.expiresAt).toLocaleDateString()})` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 18. search_by_date - search memories by date range
+    {
+        name: "memory_search_by_date",
+        description: "Search memories within a date range. Useful for timeline review.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                startDate: { type: "string", description: "ISO date string (e.g., 2024-01-01)" },
+                endDate: { type: "string", description: "ISO date string (e.g., 2024-12-31)" },
+                limit: { type: "number", default: 50 }
+            },
+            required: ["userId", "startDate", "endDate"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    startDate: z.string().min(1),
+                    endDate: z.string().min(1),
+                    limit: z.number().default(50)
+                });
+                const { userId, startDate, endDate, limit } = validatePayload(schema, args);
+
+                const results = searchMemoriesByDate(userId, startDate, endDate, limit);
+                
+                return { content: [{ type: "text", text: JSON.stringify({
+                    count: results.length,
+                    memories: results.slice(0,10).map((r: any) => ({
+                        id: r.id,
+                        query: r.userQuery?.slice(0,60),
+                        summary: r.userSummary?.slice(0,80),
+                        created: r.createdAt,
+                        priority: Math.round((r.priority||0.5)*100)+'%'
+                    }))
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 19. tag - add/remove tags on memory
+    {
+        name: "memory_tag",
+        description: "Add or remove tags on a memory. Tags help organize and filter memories.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string" },
+                tags: { type: "array", items: { type: "string" }, description: "Tags to add or remove" },
+                action: { type: "string", enum: ["add", "remove"], default: "add" }
+            },
+            required: ["memoryId", "tags"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId: z.string().min(1),
+                    tags: z.array(z.string()).min(1),
+                    action: z.enum(["add", "remove"]).default("add")
+                });
+                const { memoryId, tags, action } = validatePayload(schema, args);
+
+                const result = action === "add" 
+                    ? addMemoryTags(memoryId, tags)
+                    : removeMemoryTags(memoryId, tags);
+
+                if (!result.success) return { isError: true, content: [{ type: "text", text: "Memory not found" }] };
+
+                return { content: [{ type: "text", text: `Tags ${action}ed: [${result.tags?.join(", ")}]` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 20. search_by_tag - find memories by tag
+    {
+        name: "memory_search_by_tag",
+        description: "Search memories by tag. Find all memories with a specific tag.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                tag: { type: "string" },
+                limit: { type: "number", default: 20 }
+            },
+            required: ["userId", "tag"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    tag: z.string().min(1),
+                    limit: z.number().default(20)
+                });
+                const { userId, tag, limit } = validatePayload(schema, args);
+
+                const results = searchMemoriesByTag(userId, tag, limit);
+                
+                return { content: [{ type: "text", text: JSON.stringify({
+                    tag,
+                    count: results.length,
+                    memories: results.map((r: any) => ({
+                        id: r.id,
+                        query: r.userQuery?.slice(0,60),
+                        summary: r.userSummary?.slice(0,80),
+                        tags: JSON.parse(r.tags||"[]")
+                    }))
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 21. fuzzy_recall - fuzzy search with typo tolerance
+    {
+        name: "memory_fuzzy_recall",
+        description: "Fuzzy search memories with typo tolerance. Uses Levenshtein distance for approximate matching.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                query: { type: "string" },
+                threshold: { type: "number", default: 0.6 }
+            },
+            required: ["userId", "query"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    query: z.string().min(1),
+                    threshold: z.number().min(0.1).max(1).default(0.6)
+                });
+                const { userId, query, threshold } = validatePayload(schema, args);
+
+                // Get all memories for fuzzy matching
+                const all = db.prepare(`SELECT id, userQuery, userSummary, agentResponse FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 100`).all(userId) as any[];
+                
+                // Simple fuzzy match using substring with wildcards
+                const fuzzyResults = all.map(m => {
+                    const text = ((m.userQuery||'') + ' ' + (m.userSummary||'')).toLowerCase();
+                    const q = query.toLowerCase();
+                    
+                    // Check for common typos (1 character difference)
+                    let score = 0;
+                    if (text.includes(q)) score = 1;
+                    else {
+                        // Check each word
+                        const words = text.split(/\s+/);
+                        for (const w of words) {
+                            if (w.length >= 4 && q.length >= 4) {
+                                const dist = levenshtein(w, q);
+                                const len = Math.max(w.length, q.length);
+                                if (dist <= 2) score = 1 - (dist / len);
+                            }
+                        }
+                    }
+                    return { ...m, score };
+                }).filter(r => r.score >= threshold)
+                 .sort((a, b) => b.score - a.score);
+
+                return { content: [{ type: "text", text: JSON.stringify({
+                    query: query,
+                    found: fuzzyResults.length,
+                    memories: fuzzyResults.slice(0,8).map((r: any) => ({
+                        id: r.id,
+                        query: r.userQuery?.slice(0,60),
+                        score: Math.round(r.score*100)+'%'
+                    }))
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 22. vote - like or dislike a memory
+    {
+        name: "memory_vote",
+        description: "Vote on a memory quality. Helps identify high-value memories.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string" },
+                vote: { type: "string", enum: ["like", "dislike"] }
+            },
+            required: ["memoryId", "vote"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId: z.string().min(1),
+                    vote: z.enum(["like", "dislike"])
+                });
+                const { memoryId, vote } = validatePayload(schema, args);
+
+                const result = voteMemory(memoryId, vote);
+                return { content: [{ type: "text", text: `Vote recorded. Likes: ${result.likes}, Dislikes: ${result.dislikes}` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 23. quality - get or set memory quality score
+    {
+        name: "memory_quality",
+        description: "Get or calculate memory quality score. High quality memories are more likely to be recalled.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string" },
+                score: { type: "number", description: "Set quality score (0-1). Leave empty to calculate automatically." }
+            },
+            required: ["memoryId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId: z.string().min(1),
+                    score: z.number().min(0).max(1).optional()
+                });
+                const { memoryId, score } = validatePayload(schema, args);
+
+                if (score !== undefined) {
+                    updateMemoryQuality(memoryId, score);
+                    return { content: [{ type: "text", text: `Quality score set to ${Math.round(score*100)}%` }] };
+                }
+
+                const memory = getMemoryById(memoryId) as any;
+                if (!memory) return { isError: true, content: [{ type: "text", text: "Memory not found" }] };
+
+                const autoScore = calculateQualityScore(memory);
+                const votes = getMemoryVotes(memoryId);
+                
+                return { content: [{ type: "text", text: JSON.stringify({
+                    memoryId,
+                    autoCalculatedScore: Math.round(autoScore*100)+'%',
+                    votes: { likes: votes.likes, dislikes: votes.dislikes },
+                    currentQuality: Math.round((votes.qualityScore||0.5)*100)+'%'
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 24. best - get high quality memories
+    {
+        name: "memory_best",
+        description: "Get high quality memories. Useful for retrieving most valuable memories.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                minScore: { type: "number", default: 0.7 },
+                limit: { type: "number", default: 20 }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    minScore: z.number().min(0).max(1).default(0.7),
+                    limit: z.number().min(1).max(100).default(20)
+                });
+                const { userId, minScore, limit } = validatePayload(schema, args);
+
+                const results = getHighQualityMemories(userId, minScore, limit);
+                
+                return { content: [{ type: "text", text: JSON.stringify({
+                    count: results.length,
+                    threshold: Math.round(minScore*100)+'%',
+                    memories: results.map((r: any) => ({
+                        id: r.id,
+                        query: r.userQuery?.slice(0,60),
+                        quality: Math.round((r.qualityScore||0.5)*100)+'%',
+                        likes: r.likes || 0,
+                        created: r.createdAt
+                    }))
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 25. bulk - bulk operations on memories
+    {
+        name: "memory_bulk",
+        description: "Bulk operations: pin, tag, update priority, or delete multiple memories.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                memoryIds: { type: "array", items: { type: "string" } },
+                operation: { type: "string", enum: ["pin", "unpin", "add_tags", "delete", "boost"] },
+                tags: { type: "array", items: { type: "string" } }
+            },
+            required: ["userId", "memoryIds", "operation"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    memoryIds: z.array(z.string()).min(1),
+                    operation: z.enum(["pin", "unpin", "add_tags", "delete", "boost"]),
+                    tags: z.array(z.string()).optional()
+                });
+                const { userId, memoryIds, operation, tags } = validatePayload(schema, args);
+
+                let result;
+                switch (operation) {
+                    case "pin":
+                        result = bulkPin(memoryIds, true);
+                        break;
+                    case "unpin":
+                        result = bulkPin(memoryIds, false);
+                        break;
+                    case "add_tags":
+                        if (!tags?.length) return { isError: true, content: [{ type: "text", text: "Tags required for add_tags" }] };
+                        result = bulkAddTags(memoryIds, tags);
+                        break;
+                    case "delete":
+                        result = bulkDelete(memoryIds);
+                        break;
+                    case "boost":
+                        result = bulkUpdatePriority(memoryIds, 0.1);
+                        break;
+                    default:
+                        return { isError: true, content: [{ type: "text", text: "Unknown operation" }] };
+                }
+
+                return { content: [{ type: "text", text: JSON.stringify({ operation, ...result }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 26. archive - archive a memory
+    {
+        name: "memory_archive",
+        description: "Archive or unarchive a memory. Archived memories are hidden from normal recall but preserved.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                memoryId: { type: "string" },
+                action: { type: "string", enum: ["archive", "unarchive"], default: "archive" }
+            },
+            required: ["memoryId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    memoryId: z.string().min(1),
+                    action: z.enum(["archive", "unarchive"]).default("archive")
+                });
+                const { memoryId, action } = validatePayload(schema, args);
+
+                if (action === "archive") {
+                    archiveMemory(memoryId);
+                    return { content: [{ type: "text", text: "Memory archived" }] };
+                } else {
+                    unarchiveMemory(memoryId);
+                    return { content: [{ type: "text", text: "Memory unarchived" }] };
+                }
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 27. archived - list archived memories
+    {
+        name: "memory_archived",
+        description: "List archived memories.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                limit: { type: "number", default: 50 }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    limit: z.number().default(50)
+                });
+                const { userId, limit } = validatePayload(schema, args);
+
+                const results = getArchivedMemories(userId, limit);
+                return { content: [{ type: "text", text: JSON.stringify({
+                    count: results.length,
+                    memories: results.map((r: any) => ({
+                        id: r.id,
+                        query: r.userQuery?.slice(0,60),
+                        archivedAt: r.archivedAt
+                    }))
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 28. remind - set a reminder based on memory
+    {
+        name: "memory_remind",
+        description: "Set a reminder to revisit a memory later.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                memoryId: { type: "string" },
+                title: { type: "string" },
+                description: { type: "string" },
+                remindAt: { type: "string", description: "ISO date string for when to remind" }
+            },
+            required: ["userId", "title", "remindAt"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    memoryId: z.string().optional(),
+                    title: z.string().min(1),
+                    description: z.string().optional(),
+                    remindAt: z.string().min(1)
+                });
+                const { userId, memoryId, title, description, remindAt } = validatePayload(schema, args);
+
+                const result = createReminder(userId, memoryId || null, title, description || '', remindAt);
+                return { content: [{ type: "text", text: `Reminder set for ${new Date(remindAt).toLocaleString()}` }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 29. reminders - list pending reminders
+    {
+        name: "memory_reminders",
+        description: "List pending or upcoming reminders.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                userId: { type: "string" },
+                type: { type: "string", enum: ["pending", "upcoming"], default: "pending" },
+                daysAhead: { type: "number", default: 7 }
+            },
+            required: ["userId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = baseSchema.extend({
+                    type: z.enum(["pending", "upcoming"]).default("pending"),
+                    daysAhead: z.number().default(7)
+                });
+                const { userId, type, daysAhead } = validatePayload(schema, args);
+
+                const results = type === "pending" ? getPendingReminders(userId) : getUpcomingReminders(userId, daysAhead);
+                return { content: [{ type: "text", text: JSON.stringify({
+                    type,
+                    count: results.length,
+                    reminders: results.map((r: any) => ({
+                        id: r.id,
+                        title: r.title,
+                        description: r.description?.slice(0,50),
+                        memoryId: r.memoryId,
+                        remindAt: r.remindAt
+                    }))
+                }, null, 2) }] };
+            } catch (err: any) {
+                return { isError: true, content: [{ type: "text", text: err.message }] };
+            }
+        }
+    },
+
+    // 30. merge - merge two memories
+    {
+        name: "memory_merge",
+        description: "Merge two memories into one. Combines keywords, entities, and links.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                targetId: { type: "string", description: "Memory to keep" },
+                sourceId: { type: "string", description: "Memory to merge into target" }
+            },
+            required: ["targetId", "sourceId"],
+        },
+        handler: async (args: any) => {
+            try {
+                const schema = z.object({
+                    targetId: z.string().min(1),
+                    sourceId: z.string().min(1)
+                });
+                const { targetId, sourceId } = validatePayload(schema, args);
+
+                const result = mergeMemories(targetId, sourceId);
+                if (!result.success) return { isError: true, content: [{ type: "text", text: result.error || "Merge failed" }] };
+
+                return { content: [{ type: "text", text: `Merged ${sourceId.slice(0,8)} → ${targetId.slice(0,8)} (${result.mergedKeywords} keywords, ${result.mergedEntities} entities)` }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }

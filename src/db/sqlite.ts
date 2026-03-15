@@ -377,6 +377,8 @@ export const initSqlite = () => {
             accessCount INTEGER DEFAULT 1,
             lastAccessedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            -- TTL/expiration (NULL = never expire)
+            expiresAt DATETIME,
             -- References to other memory entities
             referencedTasks TEXT DEFAULT '[]',
             referencedKeypoints TEXT DEFAULT '[]',
@@ -386,13 +388,41 @@ export const initSqlite = () => {
             linkedSessions TEXT DEFAULT '[]',
             -- For incremental summarization
             parentSummaryId TEXT,
-            isIncremental INTEGER DEFAULT 0
+            isIncremental INTEGER DEFAULT 0,
+            -- Tags/categories for organization
+            tags TEXT DEFAULT '[]',
+            -- Quality and voting
+            qualityScore REAL DEFAULT 0.5,
+            likes INTEGER DEFAULT 0,
+            dislikes INTEGER DEFAULT 0,
+            -- Version tracking
+            version INTEGER DEFAULT 1,
+            previousVersionId TEXT,
+            -- Archive status
+            isArchived INTEGER DEFAULT 0,
+            archivedAt DATETIME
         );
         CREATE INDEX IF NOT EXISTS idx_long_term_user ON LongTermMemory(userId);
         CREATE INDEX IF NOT EXISTS idx_long_term_project ON LongTermMemory(projectId);
         CREATE INDEX IF NOT EXISTS idx_long_term_similarity ON LongTermMemory(similarity DESC);
         CREATE INDEX IF NOT EXISTS idx_long_term_priority ON LongTermMemory(priority DESC);
         CREATE INDEX IF NOT EXISTS idx_long_term_access ON LongTermMemory(lastAccessedAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_long_term_created ON LongTermMemory(createdAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_long_term_archived ON LongTermMemory(isArchived);
+
+        -- Reminders table
+        CREATE TABLE IF NOT EXISTS Reminders (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            memoryId TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            remindAt DATETIME NOT NULL,
+            status TEXT DEFAULT 'pending',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_reminders_user ON Reminders(userId);
+        CREATE INDEX IF NOT EXISTS idx_reminders_time ON Reminders(remindAt);
 
         -- Session Summary (1 summary per N chats)
         CREATE TABLE IF NOT EXISTS SessionSummary (
@@ -411,6 +441,55 @@ export const initSqlite = () => {
         );
         CREATE INDEX IF NOT EXISTS idx_session_summary_user ON SessionSummary(userId);
         CREATE INDEX IF NOT EXISTS idx_session_summary_session ON SessionSummary(sessionId);
+
+        -- Conversation Memory (for summary compression with raw fallback)
+        CREATE TABLE IF NOT EXISTS ConversationMemory (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            sessionId TEXT,
+            role TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            rawContent TEXT,
+            keywords TEXT DEFAULT '[]',
+            entities TEXT DEFAULT '[]',
+            tokenCount INTEGER DEFAULT 0,
+            isCompressed INTEGER DEFAULT 1,
+            metadata TEXT DEFAULT '{}',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_conv_memory_user ON ConversationMemory(userId);
+        CREATE INDEX IF NOT EXISTS idx_conv_memory_session ON ConversationMemory(sessionId);
+        CREATE INDEX IF NOT EXISTS idx_conv_memory_project ON ConversationMemory(projectId);
+
+        -- Raw Interaction Storage (uncompressed fallback)
+        CREATE TABLE IF NOT EXISTS RawInteraction (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            sessionId TEXT,
+            request TEXT NOT NULL,
+            response TEXT NOT NULL,
+            context TEXT DEFAULT '',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_raw_interaction_user ON RawInteraction(userId);
+        CREATE INDEX IF NOT EXISTS idx_raw_interaction_session ON RawInteraction(sessionId);
+
+        -- Memory Index (for fast keyword/entity lookup)
+        CREATE TABLE IF NOT EXISTS MemoryIndex (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            projectId TEXT,
+            sessionId TEXT,
+            summary TEXT NOT NULL,
+            keywords TEXT DEFAULT '[]',
+            entities TEXT DEFAULT '[]',
+            compressionRatio REAL DEFAULT 0,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_index_user ON MemoryIndex(userId);
+        CREATE INDEX IF NOT EXISTS idx_memory_index_keywords ON MemoryIndex(keywords);
     `);
 
     if (dbConfig.useVectorSearch) {
@@ -1748,4 +1827,244 @@ export const pinMemory = (memoryId: string, pinned: boolean = true) => {
 
 export const getPinnedMemories = (userId: string) => {
     return db.prepare(`SELECT * FROM LongTermMemory WHERE userId = ? AND isPinned = 1 ORDER BY createdAt DESC`).all(userId);
+};
+
+// TTL/Expiration functions
+export const setMemoryTTL = (memoryId: string, daysToLive: number) => {
+    const expiresAt = new Date(Date.now() + daysToLive * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare(`UPDATE LongTermMemory SET expiresAt = ? WHERE id = ?`).run(expiresAt, memoryId);
+    return { success: true, expiresAt };
+};
+
+export const removeMemoryTTL = (memoryId: string) => {
+    db.prepare(`UPDATE LongTermMemory SET expiresAt = NULL WHERE id = ?`).run(memoryId);
+    return { success: true };
+};
+
+export const cleanupExpiredMemories = (userId: string) => {
+    const now = new Date().toISOString();
+    const result = db.prepare(`DELETE FROM LongTermMemory WHERE userId = ? AND expiresAt IS NOT NULL AND expiresAt < ? AND isPinned = 0`).run(userId, now);
+    return { deleted: result.changes };
+};
+
+export const getExpiringMemories = (userId: string, daysAhead: number = 7) => {
+    const now = new Date();
+    const ahead = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000).toISOString();
+    return db.prepare(`SELECT id, userQuery, expiresAt FROM LongTermMemory WHERE userId = ? AND expiresAt IS NOT NULL AND expiresAt BETWEEN ? AND ? ORDER BY expiresAt`).all(userId, now.toISOString(), ahead);
+};
+
+// Search by date range
+export const searchMemoriesByDate = (userId: string, startDate: string, endDate: string, limit: number = 50) => {
+    return db.prepare(`SELECT * FROM LongTermMemory WHERE userId = ? AND createdAt BETWEEN ? AND ? ORDER BY createdAt DESC LIMIT ?`)
+        .all(userId, startDate, endDate, limit);
+};
+
+// Tag functions
+export const addMemoryTags = (memoryId: string, tags: string[]) => {
+    const current = db.prepare(`SELECT tags FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    if (!current) return { success: false };
+    const existing = JSON.parse(current.tags || "[]");
+    const merged = [...new Set([...existing, ...tags])];
+    db.prepare(`UPDATE LongTermMemory SET tags = ? WHERE id = ?`).run(JSON.stringify(merged), memoryId);
+    return { success: true, tags: merged };
+};
+
+export const removeMemoryTags = (memoryId: string, tags: string[]) => {
+    const current = db.prepare(`SELECT tags FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    if (!current) return { success: false };
+    const existing = JSON.parse(current.tags || "[]");
+    const remaining = existing.filter((t: string) => !tags.includes(t));
+    db.prepare(`UPDATE LongTermMemory SET tags = ? WHERE id = ?`).run(JSON.stringify(remaining), memoryId);
+    return { success: true, tags: remaining };
+};
+
+export const searchMemoriesByTag = (userId: string, tag: string, limit: number = 50) => {
+    const pattern = `%"${tag}"%`;
+    return db.prepare(`SELECT * FROM LongTermMemory WHERE userId = ? AND tags LIKE ? ORDER BY createdAt DESC LIMIT ?`)
+        .all(userId, pattern, limit);
+};
+
+export const getMemoryTags = (memoryId: string) => {
+    const row = db.prepare(`SELECT tags FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    return row ? JSON.parse(row.tags || "[]") : [];
+};
+
+// Voting functions
+export const voteMemory = (memoryId: string, vote: 'like' | 'dislike') => {
+    const col = vote === 'like' ? 'likes' : 'dislikes';
+    db.prepare(`UPDATE LongTermMemory SET ${col} = ${col} + 1 WHERE id = ?`).run(memoryId);
+    const row = db.prepare(`SELECT likes, dislikes FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    return row || { likes: 0, dislikes: 0 };
+};
+
+export const getMemoryVotes = (memoryId: string) => {
+    const row = db.prepare(`SELECT likes, dislikes, qualityScore FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    return row || { likes: 0, dislikes: 0, qualityScore: 0.5 };
+};
+
+// Version history
+export const updateMemoryVersion = (memoryId: string, newContent: string, userId: string) => {
+    const current = db.prepare(`SELECT version FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    if (!current) return { success: false };
+    
+    const newVersion = (current.version || 1) + 1;
+    db.prepare(`UPDATE LongTermMemory SET previousVersionId = id, version = ? WHERE id = ?`).run(newVersion, memoryId);
+    
+    // Store previous version in a simple way (as part of metadata)
+    const prev = db.prepare(`SELECT userQuery, agentResponse FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    
+    return { success: true, version: newVersion, previousContent: prev };
+};
+
+export const getMemoryVersions = (memoryId: string) => {
+    // Get current and previous version info
+    const row = db.prepare(`SELECT id, version, previousVersionId, userQuery, createdAt FROM LongTermMemory WHERE id = ? OR previousVersionId = ?`).all(memoryId, memoryId) as any[];
+    return row;
+};
+
+// Bulk operations
+export const bulkUpdatePriority = (memoryIds: string[], delta: number) => {
+    const placeholders = memoryIds.map(() => '?').join(',');
+    db.prepare(`UPDATE LongTermMemory SET priority = MIN(1.0, MAX(0.1, priority + ?)) WHERE id IN (${placeholders})`).run(delta, ...memoryIds);
+    return { updated: memoryIds.length };
+};
+
+export const bulkAddTags = (memoryIds: string[], tags: string[]) => {
+    let updated = 0;
+    for (const id of memoryIds) {
+        const current = db.prepare(`SELECT tags FROM LongTermMemory WHERE id = ?`).get(id) as any;
+        if (current) {
+            const existing = JSON.parse(current.tags || "[]");
+            const merged = [...new Set([...existing, ...tags])];
+            db.prepare(`UPDATE LongTermMemory SET tags = ? WHERE id = ?`).run(JSON.stringify(merged), id);
+            updated++;
+        }
+    }
+    return { updated };
+};
+
+export const bulkDelete = (memoryIds: string[]) => {
+    const placeholders = memoryIds.map(() => '?').join(',');
+    const result = db.prepare(`DELETE FROM LongTermMemory WHERE id IN (${placeholders}) AND isPinned = 0`).run(...memoryIds);
+    return { deleted: result.changes };
+};
+
+export const bulkPin = (memoryIds: string[], pinned: boolean) => {
+    const placeholders = memoryIds.map(() => '?').join(',');
+    db.prepare(`UPDATE LongTermMemory SET isPinned = ? WHERE id IN (${placeholders})`).run(pinned ? 1 : 0, ...memoryIds);
+    return { updated: memoryIds.length };
+};
+
+// Quality scoring
+export const updateMemoryQuality = (memoryId: string, score: number) => {
+    db.prepare(`UPDATE LongTermMemory SET qualityScore = ? WHERE id = ?`).run(Math.max(0, Math.min(1, score)), memoryId);
+    return { success: true };
+};
+
+export const getHighQualityMemories = (userId: string, minScore: number = 0.7, limit: number = 20) => {
+    return db.prepare(`SELECT * FROM LongTermMemory WHERE userId = ? AND qualityScore >= ? ORDER BY qualityScore DESC LIMIT ?`)
+        .all(userId, minScore, limit);
+};
+
+export const calculateQualityScore = (memory: any): number => {
+    let score = 0.5;
+    
+    // Length bonus (not too short, not too long)
+    const queryLen = (memory.userQuery || '').length;
+    const respLen = (memory.agentResponse || '').length;
+    if (queryLen > 20 && queryLen < 500) score += 0.1;
+    if (respLen > 50 && respLen < 2000) score += 0.1;
+    
+    // Completeness bonus
+    const hasSummary = memory.userSummary && memory.userSummary.length > 10;
+    const hasKeywords = memory.keywords && JSON.parse(memory.keywords).length > 0;
+    const hasEntities = memory.entities && JSON.parse(memory.entities).length > 0;
+    if (hasSummary) score += 0.1;
+    if (hasKeywords) score += 0.1;
+    if (hasEntities) score += 0.1;
+    
+    // Priority bonus
+    if (memory.priority > 0.6) score += 0.1;
+    
+    return Math.min(1, score);
+};
+
+// Archive functions
+export const archiveMemory = (memoryId: string) => {
+    db.prepare(`UPDATE LongTermMemory SET isArchived = 1, archivedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(memoryId);
+    return { success: true };
+};
+
+export const unarchiveMemory = (memoryId: string) => {
+    db.prepare(`UPDATE LongTermMemory SET isArchived = 0, archivedAt = NULL WHERE id = ?`).run(memoryId);
+    return { success: true };
+};
+
+export const getArchivedMemories = (userId: string, limit: number = 50) => {
+    return db.prepare(`SELECT * FROM LongTermMemory WHERE userId = ? AND isArchived = 1 ORDER BY archivedAt DESC LIMIT ?`)
+        .all(userId, limit);
+};
+
+// Reminder functions
+export const createReminder = (userId: string, memoryId: string | null, title: string, description: string, remindAt: string) => {
+    const id = `rem_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    db.prepare(`INSERT INTO Reminders (id, userId, memoryId, title, description, remindAt) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, memoryId, title, description, remindAt);
+    return { id, title, remindAt };
+};
+
+export const getPendingReminders = (userId: string) => {
+    const now = new Date().toISOString();
+    return db.prepare(`SELECT * FROM Reminders WHERE userId = ? AND status = 'pending' AND remindAt <= ? ORDER BY remindAt`)
+        .all(userId, now);
+};
+
+export const completeReminder = (reminderId: string) => {
+    db.prepare(`UPDATE Reminders SET status = 'completed' WHERE id = ?`).run(reminderId);
+    return { success: true };
+};
+
+export const deleteReminder = (reminderId: string) => {
+    db.prepare(`DELETE FROM Reminders WHERE id = ?`).run(reminderId);
+    return { success: true };
+};
+
+export const getUpcomingReminders = (userId: string, daysAhead: number = 7) => {
+    const now = new Date().toISOString();
+    const ahead = new Date(Date.now() + daysAhead * 24 * 60 * 60 * 1000).toISOString();
+    return db.prepare(`SELECT * FROM Reminders WHERE userId = ? AND status = 'pending' AND remindAt BETWEEN ? AND ? ORDER BY remindAt`)
+        .all(userId, now, ahead);
+};
+
+// Merge function for combining memories
+export const mergeMemories = (targetId: string, sourceId: string) => {
+    const source = db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(sourceId) as any;
+    const target = db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(targetId) as any;
+    
+    if (!source || !target) return { success: false, error: "Memory not found" };
+    
+    // Merge: combine keywords, entities, add links
+    const targetKeywords = JSON.parse(target.keywords || "[]");
+    const sourceKeywords = JSON.parse(source.keywords || "[]");
+    const mergedKeywords = [...new Set([...targetKeywords, ...sourceKeywords])];
+    
+    const targetEntities = JSON.parse(target.entities || "[]");
+    const sourceEntities = JSON.parse(source.entities || "[]");
+    const mergedEntities = [...new Set([...targetEntities, ...sourceEntities])];
+    
+    const targetSessions = JSON.parse(target.linkedSessions || "[]");
+    const sourceSessions = JSON.parse(source.linkedSessions || "[]");
+    const mergedSessions = [...new Set([...targetSessions, ...sourceSessions])];
+    
+    // Update target
+    db.prepare(`UPDATE LongTermMemory SET 
+        keywords = ?, entities = ?, linkedSessions = ?,
+        qualityScore = MIN(1.0, qualityScore + 0.1), accessCount = accessCount + 1
+        WHERE id = ?`)
+        .run(JSON.stringify(mergedKeywords), JSON.stringify(mergedEntities), JSON.stringify(mergedSessions), targetId);
+    
+    // Mark source as merged
+    db.prepare(`UPDATE LongTermMemory SET userQuery = '[MERGED] ' || userQuery WHERE id = ?`).run(sourceId);
+    
+    return { success: true, mergedKeywords: mergedKeywords.length, mergedEntities: mergedEntities.length };
 };
