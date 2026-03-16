@@ -1,37 +1,68 @@
-import { searchShortTermMemory, listEntities } from "../db/sqlite.js";
-
-// Note: To make this a true hybrid search, it should also hit the 'vss_doc' vector table. 
-// For simplicity without duplicating all logic, we'll demonstrate a unified RAG orchestrator 
-// that hits ShortTerm Vector + SQLite Graph Node Names simultaneously.
+import { db } from "../db/sqlite.js";
+import { getMemoryConfig } from "../utils/env.js";
 
 export const hybridTools = [
     {
         name: "global_memory_search",
-        description: "A Unified Retrieval-Augmented Generation (RAG) search. Simultaneously queries the SQLite Vector short-term DB and the SQLite Graph node titles to retrieve a consolidated block of highly relevant memory.",
+        description: "A Unified RAG search across short-term memory and graph nodes. If userId/projectId provided, filters by them. If omitted, searches ALL memories globally.",
         inputSchema: {
             type: "object",
             properties: {
-                userId: { type: "string" },
-                projectId: { type: "string" },
-                query: { type: "string", description: "The overarching search objective" },
-                limit: { type: "number", description: "Limit per database branch (default 3)" }
+                userId: { type: "string", description: "Optional: filter by userId" },
+                projectId: { type: "string", description: "Optional: filter by projectId" },
+                query: { type: "string", description: "The search query" },
+                limit: { type: "number", description: "Results per branch (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" },
+                confidenceThreshold: { type: "number", description: "Min confidence score (default from env: 20)" }
             },
-            required: ["userId", "projectId", "query"],
+            required: ["query"],
         },
         handler: async (args: any) => {
-            const { userId, projectId, query, limit = 3 } = args;
+            const config = getMemoryConfig();
+            const { userId, projectId, query } = args;
+            const limit = args.limit ?? config.DEFAULT_SEARCH_LIMIT;
+            const offset = args.offset ?? config.DEFAULT_SEARCH_OFFSET;
+            const threshold = args.confidenceThreshold ?? config.DEFAULT_CONFIDENCE_THRESHOLD;
+            
             try {
-                // 1. Vector Search across Short Term Keys & Values via SQLite
-                const stmResults = await searchShortTermMemory(userId, projectId, query, limit);
+                // 1. Dynamic Short Term Memory Search
+                let stmSql = `SELECT * FROM ShortTermChat WHERE 
+                    (userQuery LIKE ? OR userSummary LIKE ? OR agentResponse LIKE ? OR agentSummary LIKE ? OR combo LIKE ?)`;
+                const pattern = `%${query}%`;
+                const params: any[] = [pattern, pattern, pattern, pattern, pattern];
+                
+                if (userId) { stmSql += ` AND userId = ?`; params.push(userId); }
+                if (projectId) { stmSql += ` AND projectId = ?`; params.push(projectId); }
+                stmSql += ` ORDER BY chatIndex DESC LIMIT ? OFFSET ?`;
+                params.push(limit, offset);
+                
+                const stmResults = db.prepare(stmSql).all(...params);
 
-                // 2. Text Search across Long Term Graph Nodes via SQLite
-                const graphResults = listEntities(userId, projectId).filter(e => 
-                    e.name.toLowerCase().includes(query.toLowerCase())
-                ).slice(0, limit);
+                // 2. Dynamic Graph Entity Search
+                let graphSql = `SELECT * FROM Entities WHERE name LIKE ?`;
+                const graphParams: any[] = [pattern];
+                if (userId) { graphSql += ` AND userId = ?`; graphParams.push(userId); }
+                if (projectId) { graphSql += ` AND projectId = ?`; graphParams.push(projectId); }
+                graphSql += ` ORDER BY createdAt DESC LIMIT ? OFFSET ?`;
+                graphParams.push(limit, offset);
+                
+                const graphResults = db.prepare(graphSql).all(...graphParams).map((r: any) => ({
+                    ...r,
+                    properties: r.properties ? JSON.parse(r.properties) : {}
+                }));
 
                 const unifiedResult = {
-                    vector_short_term: stmResults,
-                    graph_long_term: graphResults
+                    short_term_memory: stmResults,
+                    long_term_graph: graphResults,
+                    search_context: { 
+                        userId: userId || "ALL", 
+                        projectId: projectId || "ALL", 
+                        query,
+                        limit,
+                        offset,
+                        confidenceThreshold: threshold,
+                        source: "global_memory_search"
+                    }
                 };
 
                 return {

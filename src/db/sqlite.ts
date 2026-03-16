@@ -1476,7 +1476,9 @@ export const searchShortTermMemory = (
     query: string,
     sessionId?: string,
     projectId?: string | null,
-    threshold: number = 20
+    threshold: number = 20,
+    limit: number = 20,
+    offset: number = 0
 ) => {
     const pattern = `%${query}%`;
     let sql = `SELECT * FROM ShortTermChat WHERE userId = ? AND 
@@ -1486,7 +1488,8 @@ export const searchShortTermMemory = (
     if (sessionId) { sql += ` AND sessionId = ?`; params.push(sessionId); }
     if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
     
-    sql += ` ORDER BY chatIndex DESC LIMIT 20`;
+    sql += ` ORDER BY chatIndex DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
     
     const rows = db.prepare(sql).all(...params) as any[];
     

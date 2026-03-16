@@ -25,6 +25,11 @@ const memoryConfigSchema = z.object({
     ENABLE_PRIORITY_SCORING: z.coerce.boolean().default(true),
     PRIORITY_DECAY_DAYS: z.coerce.number().min(1).max(90).default(30),
     
+    // Search Configuration
+    DEFAULT_SEARCH_LIMIT: z.coerce.number().min(1).max(100).default(10),
+    DEFAULT_SEARCH_OFFSET: z.coerce.number().min(0).max(1000).default(0),
+    DEFAULT_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(100).default(20),
+    
     // Cross-session linking
     ENABLE_SESSION_LINKING: z.coerce.boolean().default(true),
     CROSS_SESSION_THRESHOLD: z.coerce.number().min(0).max(100).default(60),
@@ -54,6 +59,9 @@ const envSchema = z.object({
     PRIORITY_DECAY_DAYS: z.coerce.number().optional(),
     ENABLE_SESSION_LINKING: z.coerce.boolean().optional(),
     CROSS_SESSION_THRESHOLD: z.coerce.number().optional(),
+    DEFAULT_SEARCH_LIMIT: z.coerce.number().optional(),
+    DEFAULT_SEARCH_OFFSET: z.coerce.number().optional(),
+    DEFAULT_CONFIDENCE_THRESHOLD: z.coerce.number().optional(),
     ENABLE_AUTO_CLEANUP: z.coerce.boolean().optional(),
     CLEANUP_AFTER_DAYS: z.coerce.number().optional(),
     MAX_CONTEXT_TOKENS: z.coerce.number().optional(),
@@ -92,6 +100,9 @@ export const getMemoryConfig = () => {
         PRIORITY_DECAY_DAYS: 30,
         ENABLE_SESSION_LINKING: true,
         CROSS_SESSION_THRESHOLD: 60,
+        DEFAULT_SEARCH_LIMIT: 10,
+        DEFAULT_SEARCH_OFFSET: 0,
+        DEFAULT_CONFIDENCE_THRESHOLD: 20,
         ENABLE_AUTO_CLEANUP: true,
         CLEANUP_AFTER_DAYS: 90,
         MAX_CONTEXT_TOKENS: 8000,

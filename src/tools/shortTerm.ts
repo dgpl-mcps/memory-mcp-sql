@@ -1,4 +1,5 @@
 import { setShortTermMemory, getShortTermMemory, deleteShortTermMemory, clearSessionMemory, searchShortTermMemory, listShortTermMemory } from "../db/sqlite.js";
+import { getMemoryConfig } from "../utils/env.js";
 
 export const shortTermTools = [
     {
@@ -62,16 +63,26 @@ export const shortTermTools = [
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID" },
                 query: { type: "string", description: "Search query text." },
-                limit: { type: "number", description: "Maximum number of results to return (default 5)." }
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" },
+                confidenceThreshold: { type: "number", description: "Min confidence score (default from env: 20)" }
             },
             required: ["userId", "projectId", "query"],
         },
         handler: async (args: any) => {
-            const { userId, projectId, query, limit } = args;
+            const config = getMemoryConfig();
+            const { userId, projectId, query } = args;
+            const limit = args.limit ?? config.DEFAULT_SEARCH_LIMIT;
+            const offset = args.offset ?? config.DEFAULT_SEARCH_OFFSET;
+            const threshold = args.confidenceThreshold ?? config.DEFAULT_CONFIDENCE_THRESHOLD;
+            
             try {
-                const results = await searchShortTermMemory(userId, projectId, query, limit || 5);
+                const results = await searchShortTermMemory(userId, query, undefined, projectId, threshold, limit, offset);
                 return {
-                    content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+                    content: [{ type: "text", text: JSON.stringify({
+                        results,
+                        search_context: { limit, offset, confidenceThreshold: threshold, source: "search_short_term_memory" }
+                    }, null, 2) }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -85,16 +96,25 @@ export const shortTermTools = [
             type: "object",
             properties: {
                 userId: { type: "string", description: "User ID" },
-                projectId: { type: "string", description: "Project ID" }
+                projectId: { type: "string", description: "Project ID" },
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "projectId"],
         },
         handler: async (args: any) => {
+            const cfg = getMemoryConfig();
             const { userId, projectId } = args;
+            const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+            const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+            
             try {
                 const results = listShortTermMemory(userId, projectId);
                 return {
-                    content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+                    content: [{ type: "text", text: JSON.stringify({
+                        results: results.slice(offset, offset + limit),
+                        search_context: { limit, offset, source: "list_short_term_memory" }
+                    }, null, 2) }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };

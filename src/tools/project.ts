@@ -1,4 +1,5 @@
 import { setShortTermMemory, getShortTermMemory, createEntity, getEntity, listEntities, updateEntity, createRelation, getRelations } from "../db/sqlite.js";
+import { getMemoryConfig } from "../utils/env.js";
 
 // Specialized helper tools for common graph actions to avoid complex MCP JSON construction by the agent
 
@@ -197,17 +198,26 @@ export const projectTools = [
             properties: {
                 userId: { type: "string" },
                 projectId: { type: "string" },
-                keyword: { type: "string", description: "Word or concept to search for" }
+                keyword: { type: "string", description: "Word or concept to search for" },
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "projectId", "keyword"],
         },
         handler: async (args: any) => {
+            const cfg = getMemoryConfig();
             const { userId, projectId, keyword } = args;
+            const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+            const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+            
             try {
                 const insights = listEntities(userId, projectId, 'Insight');
                 const filtered = insights.filter(i => i.name.toLowerCase().includes(keyword.toLowerCase()));
                 return {
-                    content: [{ type: "text", text: JSON.stringify(filtered, null, 2) }],
+                    content: [{ type: "text", text: JSON.stringify({
+                        results: filtered.slice(offset, offset + limit),
+                        search_context: { limit, offset, source: "search_insights" }
+                    }, null, 2) }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };

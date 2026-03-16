@@ -1,4 +1,5 @@
 import { storeDocumentChunk, searchDocumentChunks } from "../db/sqlite.js";
+import { getMemoryConfig } from "../utils/env.js";
 
 // Basic chunking helper if no library is allowed
 function chunkText(text: string, maxChars: number = 2000): string[] {
@@ -54,12 +55,17 @@ export const documentTools = [
                 projectId: { type: "string" },
                 documentId: { type: "string", description: "The unique identifier of the document to query" },
                 query: { type: "string", description: "The question or search query" },
-                limit: { type: "number", description: "Max number of chunks to return (default 3)" }
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "projectId", "documentId", "query"],
         },
         handler: async (args: any) => {
-            const { userId, projectId, documentId, query, limit = 3 } = args;
+            const config = getMemoryConfig();
+            const { userId, projectId, documentId, query } = args;
+            const limit = args.limit ?? config.DEFAULT_SEARCH_LIMIT;
+            const offset = args.offset ?? config.DEFAULT_SEARCH_OFFSET;
+            
             try {
                 const results = await searchDocumentChunks(userId, projectId, documentId, query, limit);
 
@@ -70,7 +76,10 @@ export const documentTools = [
                 }
 
                 return {
-                    content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+                    content: [{ type: "text", text: JSON.stringify({
+                        results: results.slice(offset),
+                        search_context: { limit, offset, source: "search_document" }
+                    }, null, 2) }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };

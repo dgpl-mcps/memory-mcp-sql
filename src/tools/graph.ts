@@ -1,5 +1,6 @@
 import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, createRelation, getRelations, deleteRelation } from "../db/sqlite.js";
 import { validatePayload, baseSchema } from "./validation.js";
+import { getMemoryConfig } from "../utils/env.js";
 import { z } from "zod";
 
 export const graphTools = [
@@ -197,26 +198,37 @@ export const graphTools = [
                 userId: { type: "string", description: "User ID" },
                 projectId: { type: "string", description: "Project ID" },
                 entityType: { type: "string", description: "Type to search for (e.g., Rule, Task)" },
-                searchString: { type: "string", description: "Substring to match in name" }
+                searchString: { type: "string", description: "Substring to match in name" },
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "projectId"],
         },
         handler: async (args: any) => {
+            const config = getMemoryConfig();
             const { userId, projectId, entityType, searchString } = args;
+            const limit = args.limit ?? config.DEFAULT_SEARCH_LIMIT;
+            const offset = args.offset ?? config.DEFAULT_SEARCH_OFFSET;
+            
             try {
                 const entities = listEntities(userId, projectId, entityType);
                 const filtered = searchString 
-                    ? entities.filter(e => e.name.toLowerCase().includes(searchString.toLowerCase())).slice(0, 50)
-                    : entities.slice(0, 50);
+                    ? entities.filter(e => e.name.toLowerCase().includes(searchString.toLowerCase()))
+                    : entities;
 
-                const results = filtered.map(e => {
+                const paginated = filtered.slice(offset, offset + limit);
+
+                const results = paginated.map(e => {
                     const outEdges = getRelations(userId, projectId, e.id);
                     const inEdges = getRelations(userId, projectId, undefined, e.id);
                     return { entity: e, outgoing: outEdges, incoming: inEdges };
                 });
 
                 return {
-                    content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+                    content: [{ type: "text", text: JSON.stringify({
+                        results,
+                        search_context: { limit, offset, source: "search_graph" }
+                    }, null, 2) }],
                 };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -232,13 +244,16 @@ export const graphTools = [
                 userId: { type: "string" },
                 projectId: { type: "string" },
                 id: { type: "string", description: "Entity ID of the starting Node" },
-                maxDepth: { type: "number", description: "Maximum depth to search (default 3, max 5)" }
+                maxDepth: { type: "number", description: "Maximum depth to search (default 3, max 5)" },
+                limit: { type: "number", description: "Max results per level (default from env: 10)" }
             },
             required: ["userId", "projectId", "id"],
         },
         handler: async (args: any) => {
-            const { userId, projectId, id, maxDepth = 3 } = args;
-            const depthLimit = Math.min(Math.max(1, maxDepth), 5);
+            const config = getMemoryConfig();
+            const { userId, projectId, id } = args;
+            const maxDepth = Math.min(Math.max(1, args.maxDepth ?? 3), 5);
+            const limit = args.limit ?? config.DEFAULT_SEARCH_LIMIT;
 
             try {
                 const visitedNodes = new Set<string>();
@@ -258,7 +273,7 @@ export const graphTools = [
                         nodes.push(entity);
                     } else continue;
 
-                    if (depth < depthLimit) {
+                    if (depth < maxDepth) {
                         const outEdges = getRelations(userId, projectId, currentId);
                         const inEdges = getRelations(userId, projectId, undefined, currentId);
 

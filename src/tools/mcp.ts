@@ -7,6 +7,7 @@ import {
     registerTool, searchTools, addToolSchema, getToolSchema,
     storeEmbedding, searchEmbeddings
 } from "../db/sqlite.js";
+import { getMemoryConfig } from "../utils/env.js";
 
 const baseSchema = {
     userId: z.string(),
@@ -578,15 +579,24 @@ export const mcpTools = [
             type: "object",
             properties: {
                 userId: { type: "string", description: "User ID" },
-                query: { type: "string", description: "Search query" }
+                query: { type: "string", description: "Search query" },
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "query"],
         },
         handler: async (args: any) => {
             try {
+                const cfg = getMemoryConfig();
                 const { userId, query } = args;
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+                
                 const tools = searchTools(userId, query);
-                return { content: [{ type: "text", text: JSON.stringify(tools, null, 2) }] };
+                return { content: [{ type: "text", text: JSON.stringify({
+                    results: tools.slice(offset, offset + limit),
+                    search_context: { limit, offset, source: "search_tools" }
+                }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -667,15 +677,23 @@ export const mcpTools = [
                 userId: { type: "string", description: "User ID" },
                 query: { type: "string", description: "What to recall" },
                 refTable: { type: "string", description: "Optional memory type filter" },
-                limit: { type: "number", description: "Max results", default: 10 }
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "query"],
         },
         handler: async (args: any) => {
             try {
-                const { userId, query, refTable, limit = 10 } = args;
+                const cfg = getMemoryConfig();
+                const { userId, query, refTable } = args;
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+                
                 const results = await searchEmbeddings(userId, query, refTable, limit);
-                return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+                return { content: [{ type: "text", text: JSON.stringify({
+                    results: results.slice(offset),
+                    search_context: { limit, offset, source: "recall" }
+                }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }

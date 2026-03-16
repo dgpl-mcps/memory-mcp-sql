@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { validatePayload, baseSchema } from "./validation.js";
+import { getMemoryConfig } from "../utils/env.js";
 import {
     addShortTermChat, getShortTermChats, getSessionChatCount,
     summarizeAndMoveToLongTerm, searchShortTermMemory, searchLongTermMemory,
@@ -14,7 +15,6 @@ import {
     archiveMemory, unarchiveMemory, getArchivedMemories, createReminder, getPendingReminders,
     completeReminder, deleteReminder, getUpcomingReminders, mergeMemories
 } from "../db/sqlite.js";
-import { getMemoryConfig } from "../utils/env.js";
 
 const STOP_WORDS = new Set(['the','a','an','and','or','but','is','are','was','were','be','been','have','has','had','do','does','did','will','would','could','should','to','of','in','for','on','with','at','by','from','this','that','what','which','who','just','also','now','about']);
 
@@ -399,12 +399,20 @@ export const memoryTools = [
                 projectId: { type: "string" },
                 sessionId: { type: "string" },
                 query: { type: "string" },
-                scope: { type: "string", enum: ["session", "all"], default: "all" }
+                scope: { type: "string", enum: ["session", "all"], default: "all" },
+                limit: { type: "number", description: "Max results per source (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" },
+                confidenceThreshold: { type: "number", description: "Min confidence score (default from env: 20)" }
             },
             required: ["userId", "query"],
         },
         handler: async (args: any) => {
             try {
+                const cfg = getMemoryConfig();
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+                const threshold = args.confidenceThreshold ?? cfg.DEFAULT_CONFIDENCE_THRESHOLD;
+                
                 const schema = baseSchema.extend({
                     sessionId: z.string().optional(),
                     query: z.string().min(1),
@@ -412,62 +420,34 @@ export const memoryTools = [
                 });
                 const { userId, projectId, sessionId, query, scope } = validatePayload(schema, args);
                 
-                const cfg = getMemoryConfig();
                 const results: any[] = [];
 
                 // Use query expansion for better recall
                 const expandedQueries = expandQuery(query);
                 
-                // Short-term (low threshold) - use enhanced relevance with expanded queries
+                // Short-term (low threshold)
                 for (const q of expandedQueries.slice(0, 3)) {
-                    const st = searchShortTermMemory(userId, q, scope === "session" ? sessionId : undefined, projectId || null, cfg.SHORT_TERM_THRESHOLD);
+                    const st = searchShortTermMemory(userId, q, scope === "session" ? sessionId : undefined, projectId || null, threshold, limit, offset);
                     results.push(...st.map(r => ({ ...r, src: "short-term", score: calculateRelevance(query, r), queryUsed: q })));
                 }
                 
-                // Long-term (high threshold) - use enhanced relevance
+                // Long-term (high threshold)
                 for (const q of expandedQueries.slice(0, 3)) {
-                    const lt = searchLongTermMemory(userId, q, projectId || null, 50);
+                    const lt = searchLongTermMemory(userId, q, projectId || null, limit);
                     results.push(...lt.map(r => ({ ...r, src: "long-term", score: calculateRelevance(query, r), queryUsed: q })));
                 }
                 
                 // Cross-session
                 if (scope === "all" && sessionId) {
                     for (const q of expandedQueries.slice(0, 2)) {
-                        const cs = findCrossSessionMemories(userId, sessionId, q, cfg.CROSS_SESSION_THRESHOLD);
+                        const cs = findCrossSessionMemories(userId, sessionId, q, threshold);
                         results.push(...cs.map(r => ({ ...r, src: "cross-session", score: Math.round(r.similarity), queryUsed: q })));
                     }
                 }
-                
-                if (results.length === 0) return { content: [{ type: "text", text: "No memories found. Try different keywords." }] };
-                
-                // Dedupe and sort
-                const seen = new Set();
-                const uniq = results.filter(r => { if (seen.has(r.id+r.src)) return false; seen.add(r.id+r.src); return true; });
-                uniq.sort((a, b) => b.similarity - a.similarity);
 
-                // Auto-boost accessed memories (freshness + priority update)
-                const topResults = uniq.slice(0, 3);
-                for (const r of topResults) {
-                    if (r.src === "long-term" || r.src === "cross-session") {
-                        try {
-                            updateMemoryPriority(r.id, 0.05); // Small boost for being recalled
-                            if (sessionId && r.linkedSessions) {
-                                linkMemoryToSession(r.id, sessionId);
-                            }
-                        } catch (e) { /* ignore */ }
-                    }
-                }
-                
                 return { content: [{ type: "text", text: JSON.stringify({
-                    found: uniq.length,
-                    expandedFrom: expandedQueries.slice(0, 3),
-                    memories: uniq.slice(0,6).map(r => ({
-                        from: r.src,
-                        score: r.score + '%',
-                        user: r.userSummary||r.userQuery?.slice(0,60),
-                        agent: r.agentSummary||r.agentResponse?.slice(0,80),
-                        tasks: (() => { try { return JSON.parse(r.referencedTasks||"[]"); } catch { return []; } })().slice(0,2)
-                    }))
+                    results: results.slice(0, limit),
+                    search_context: { limit, offset, confidenceThreshold: threshold, scope, source: "memory_recall" }
                 }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -484,14 +464,19 @@ export const memoryTools = [
             properties: {
                 userId: { type: "string" },
                 sessionId: { type: "string" },
-                limit: { type: "number", default: 5 }
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "sessionId"],
         },
         handler: async (args: any) => {
             try {
-                const schema = z.object({ userId: z.string().min(1), sessionId: z.string().min(1), limit: z.number().default(5) });
-                const { userId, sessionId, limit } = validatePayload(schema, args);
+                const cfg = getMemoryConfig();
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+                
+                const schema = z.object({ userId: z.string().min(1), sessionId: z.string().min(1) });
+                const { userId, sessionId } = validatePayload(schema, args);
                 
                 const chats = getShortTermChats(userId, sessionId, undefined, limit);
                 const summaries = getSessionSummaries(userId, sessionId);
@@ -503,7 +488,8 @@ export const memoryTools = [
                     flow: flow.type,
                     complexity: flow.complexity + '%',
                     summary: flow.summary,
-                    recent: chats.reverse().map(c => ({ i: c.chatIndex, u: c.userQuery?.slice(0,60), a: c.agentResponse?.slice(0,80) })) 
+                    recent: chats.reverse().map(c => ({ i: c.chatIndex, u: c.userQuery?.slice(0,60), a: c.agentResponse?.slice(0,80) })),
+                    search_context: { limit, offset, source: "memory_history" }
                 }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -520,17 +506,29 @@ export const memoryTools = [
             properties: {
                 userId: { type: "string" },
                 sessionId: { type: "string" },
-                maxTokens: { type: "number", default: 6000 }
+                maxTokens: { type: "number", description: "Max tokens (default: 6000)" },
+                limit: { type: "number", description: "Max memories to include (default from env: 10)" }
             },
             required: ["userId", "sessionId"],
         },
         handler: async (args: any) => {
             try {
-                const schema = z.object({ userId: z.string().min(1), sessionId: z.string().min(1), maxTokens: z.number().default(6000) });
+                const cfg = getMemoryConfig();
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const schema = z.object({ 
+                    userId: z.string().min(1), 
+                    sessionId: z.string().min(1), 
+                    maxTokens: z.number().default(6000) 
+                });
                 const { userId, sessionId, maxTokens } = validatePayload(schema, args);
                 
                 const result = getOptimizedContext(userId, sessionId, maxTokens, 3);
-                return { content: [{ type: "text", text: JSON.stringify({ tokens: result.tokens, sources: result.summariesUsed+result.chatsUsed, text: result.context.slice(0,300)+"..." }, null, 2) }] };
+                return { content: [{ type: "text", text: JSON.stringify({ 
+                    tokens: result.tokens, 
+                    sources: result.summariesUsed+result.chatsUsed, 
+                    text: result.context.slice(0,300)+"...",
+                    search_context: { maxTokens, limit, source: "memory_context" }
+                }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
             }
@@ -1142,30 +1140,35 @@ export const memoryTools = [
                 userId: { type: "string" },
                 startDate: { type: "string", description: "ISO date string (e.g., 2024-01-01)" },
                 endDate: { type: "string", description: "ISO date string (e.g., 2024-12-31)" },
-                limit: { type: "number", default: 50 }
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "startDate", "endDate"],
         },
         handler: async (args: any) => {
             try {
+                const cfg = getMemoryConfig();
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+                
                 const schema = baseSchema.extend({
                     startDate: z.string().min(1),
                     endDate: z.string().min(1),
-                    limit: z.number().default(50)
                 });
-                const { userId, startDate, endDate, limit } = validatePayload(schema, args);
+                const { userId, startDate, endDate } = validatePayload(schema, args);
 
-                const results = searchMemoriesByDate(userId, startDate, endDate, limit);
+                const results = searchMemoriesByDate(userId, startDate, endDate, limit + offset);
                 
                 return { content: [{ type: "text", text: JSON.stringify({
                     count: results.length,
-                    memories: results.slice(0,10).map((r: any) => ({
+                    memories: results.slice(offset, offset + limit).map((r: any) => ({
                         id: r.id,
                         query: r.userQuery?.slice(0,60),
                         summary: r.userSummary?.slice(0,80),
                         created: r.createdAt,
                         priority: Math.round((r.priority||0.5)*100)+'%'
-                    }))
+                    })),
+                    search_context: { limit, offset, source: "memory_search_by_date" }
                 }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -1217,29 +1220,34 @@ export const memoryTools = [
             properties: {
                 userId: { type: "string" },
                 tag: { type: "string" },
-                limit: { type: "number", default: 20 }
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "tag"],
         },
         handler: async (args: any) => {
             try {
+                const cfg = getMemoryConfig();
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+                
                 const schema = baseSchema.extend({
                     tag: z.string().min(1),
-                    limit: z.number().default(20)
                 });
-                const { userId, tag, limit } = validatePayload(schema, args);
+                const { userId, tag } = validatePayload(schema, args);
 
-                const results = searchMemoriesByTag(userId, tag, limit);
+                const results = searchMemoriesByTag(userId, tag, limit + offset);
                 
                 return { content: [{ type: "text", text: JSON.stringify({
                     tag,
                     count: results.length,
-                    memories: results.map((r: any) => ({
+                    memories: results.slice(offset, offset + limit).map((r: any) => ({
                         id: r.id,
                         query: r.userQuery?.slice(0,60),
                         summary: r.userSummary?.slice(0,80),
                         tags: (() => { try { return JSON.parse(r.tags||"[]"); } catch { return []; } })()
-                    }))
+                    })),
+                    search_context: { limit, offset, source: "memory_search_by_tag" }
                 }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
@@ -1256,17 +1264,23 @@ export const memoryTools = [
             properties: {
                 userId: { type: "string" },
                 query: { type: "string" },
-                threshold: { type: "number", default: 0.6 }
+                threshold: { type: "number", description: "Min match score 0-1 (default from env: 20 converted to 0.2)" },
+                limit: { type: "number", description: "Max results (default from env: 10)" },
+                offset: { type: "number", description: "Pagination offset (default from env: 0)" }
             },
             required: ["userId", "query"],
         },
         handler: async (args: any) => {
             try {
+                const cfg = getMemoryConfig();
+                const limit = args.limit ?? cfg.DEFAULT_SEARCH_LIMIT;
+                const offset = args.offset ?? cfg.DEFAULT_SEARCH_OFFSET;
+                const threshold = args.threshold ? args.threshold / 100 : cfg.DEFAULT_CONFIDENCE_THRESHOLD / 100;
+                
                 const schema = baseSchema.extend({
                     query: z.string().min(1),
-                    threshold: z.number().min(0.1).max(1).default(0.6)
                 });
-                const { userId, query, threshold } = validatePayload(schema, args);
+                const { userId, query } = validatePayload(schema, args);
 
                 // Get all memories for fuzzy matching
                 const all = db.prepare(`SELECT id, userQuery, userSummary, agentResponse FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 100`).all(userId) as any[];
@@ -1297,11 +1311,12 @@ export const memoryTools = [
                 return { content: [{ type: "text", text: JSON.stringify({
                     query: query,
                     found: fuzzyResults.length,
-                    memories: fuzzyResults.slice(0,8).map((r: any) => ({
+                    memories: fuzzyResults.slice(offset, offset + limit).map((r: any) => ({
                         id: r.id,
                         query: r.userQuery?.slice(0,60),
                         score: Math.round(r.score*100)+'%'
-                    }))
+                    })),
+                    search_context: { limit, offset, threshold: threshold * 100, source: "memory_fuzzy_recall" }
                 }, null, 2) }] };
             } catch (err: any) {
                 return { isError: true, content: [{ type: "text", text: err.message }] };
