@@ -17,7 +17,7 @@ export class AuditLogger {
             result: result.isError ? result.content[0].text : AuditLogger.censorLargeFields(result)
         };
 
-        const logString = JSON.stringify(logEntry) + '\\n';
+        const logString = JSON.stringify(logEntry) + '\n';
         fs.appendFile(LOG_FILE, logString, (err) => {
             if (err) console.error('Failed to write to audit log:', err);
         });
