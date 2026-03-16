@@ -391,6 +391,8 @@ export const initSqlite = () => {
             isIncremental INTEGER DEFAULT 0,
             -- Tags/categories for organization
             tags TEXT DEFAULT '[]',
+            -- Pinned memories
+            isPinned INTEGER DEFAULT 0,
             -- Quality and voting
             qualityScore REAL DEFAULT 0.5,
             likes INTEGER DEFAULT 0,
