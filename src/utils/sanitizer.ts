@@ -10,7 +10,7 @@ export class OutputSanitizer {
                 if (block.type === 'text' && typeof block.text === 'string') {
                     if (block.text.length > this.MAX_SAFE_TOKENS) {
                         block.text = block.text.substring(0, this.MAX_SAFE_TOKENS) +
-                            `\\n\\n[...DATA TRUNCATED: Payload exceeded safe ${this.MAX_SAFE_TOKENS} character limits. Please utilize search filters to narrow your query.]`;
+                            `\n\n[...DATA TRUNCATED: Payload exceeded safe ${this.MAX_SAFE_TOKENS} character limits. Please utilize search filters to narrow your query.]`;
                     }
                 }
                 return block;
