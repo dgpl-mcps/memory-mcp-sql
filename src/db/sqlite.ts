@@ -393,6 +393,7 @@ export const initSqlite = () => {
             combo TEXT,
             keywords TEXT DEFAULT '[]',
             entities TEXT DEFAULT '[]',
+            intent TEXT DEFAULT 'general',
             similarity REAL DEFAULT 0,
             -- Priority/importance with time decay
             priority REAL DEFAULT 0.5,
@@ -441,20 +442,6 @@ export const initSqlite = () => {
         CREATE INDEX IF NOT EXISTS idx_long_term_archived ON LongTermMemory(isArchived);
         CREATE INDEX IF NOT EXISTS idx_long_term_topic ON LongTermMemory(topicId);
         CREATE INDEX IF NOT EXISTS idx_long_term_perspective ON LongTermMemory(perspectiveOf);
-
-        -- Reminders table
-        CREATE TABLE IF NOT EXISTS Reminders (
-            id TEXT PRIMARY KEY,
-            userId TEXT NOT NULL,
-            memoryId TEXT,
-            title TEXT NOT NULL,
-            description TEXT,
-            remindAt DATETIME NOT NULL,
-            status TEXT DEFAULT 'pending',
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS idx_reminders_user ON Reminders(userId);
-        CREATE INDEX IF NOT EXISTS idx_reminders_time ON Reminders(remindAt);
 
         -- Memory Links (for cross-session relationships)
         CREATE TABLE IF NOT EXISTS MemoryLinks (

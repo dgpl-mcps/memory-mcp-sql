@@ -309,12 +309,17 @@ For content >500 characters:
 - Truncates summary to ~150 characters
 - Full content always stored; summary for quick reference
 
-### Auto-Linking
-When storing memories with extracted entities:
-- Automatically finds related memories sharing same entities
-- Creates `entity_related` links between memories
-- Returns `autoLinked` count in response
-- Limited to 3 auto-links per memory to avoid noise
+### Auto-Linking (MOST POWERFUL FEATURE)
+Automatic memory relationship discovery with strength scoring:
+| Phase | Method | Strength | Description |
+|-------|--------|----------|-------------|
+| 1 | Entity Match | 0.8 | Memories share extracted entities (@mention, CamelCase) |
+| 2 | Intent Cluster | 0.6 | Same intent (error/success) + shared entity + recent |
+| 3 | Keyword Match | 0.4 | Content/summary keyword overlap |
+
+- Limited to 10 auto-links per memory to avoid noise
+- Returns `relatedMemories` array with linked memory IDs
+- Creates `MemoryLinks` table entries for graph traversal
 
 ---
 

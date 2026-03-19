@@ -188,7 +188,6 @@ export const memoryTool = {
         required: ["op", "userId"],
     },
     handler: async (args: any) => {
-        console.error("[DEBUG memory.handler] op:", args?.op, "userId:", args?.userId);
         const { op, userId, projectId, sessionId } = args;
         const cfg = getMemoryConfig();
         
@@ -212,7 +211,7 @@ export const memoryTool = {
                     // Auto-extract entities
                     const entities = extractEntities(text);
                     
-                    // Generate smart summary (auto-summarize if long)
+                    // Generate smart summary
                     const { summary, needsSummarization } = autoSummarize(text);
                     
                     // Determine priority based on intent
@@ -232,23 +231,71 @@ export const memoryTool = {
                         priority, new Date().toISOString()
                     );
                     
-                    // Auto-link to related memories
-                    const autoLinks = [];
+                    // Auto-link to related memories (POWERFUL FEATURE)
+                    interface AutoLink { id: string; type: string; content: string; }
+                    const autoLinks: AutoLink[] = [];
                     if (entities.length > 0) {
-                        // Find memories with same entities
-                        const relatedByEntity = db.prepare(`
-                            SELECT id FROM LongTermMemory 
-                            WHERE userId = ? AND id != ? AND entities LIKE ?
-                            ORDER BY createdAt DESC LIMIT 3
-                        `).all(userId, id, `%${entities[0]}%`) as any[];
+                        // Phase 1: Find memories with same entities (entity matching)
+                        for (const entity of entities.slice(0, 3)) {
+                            const relatedByEntity = db.prepare(`
+                                SELECT id, content, intent, entities FROM LongTermMemory 
+                                WHERE userId = ? AND id != ? AND entities LIKE ?
+                                ORDER BY priority DESC, createdAt DESC LIMIT 5
+                            `).all(userId, id, `%${entity}%`) as any[];
+                            
+                            for (const rel of relatedByEntity) {
+                                if (autoLinks.find(l => l.id === rel.id)) continue;
+                                const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
+                                db.prepare(`
+                                    INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                `).run(linkId, id, rel.id, "entity_related", 0.8, new Date().toISOString());
+                                autoLinks.push({ id: rel.id, type: "entity", content: rel.content?.slice(0, 50) });
+                            }
+                        }
                         
-                        for (const rel of relatedByEntity) {
-                            const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
-                            db.prepare(`
-                                INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, createdAt)
-                                VALUES (?, ?, ?, ?, ?)
-                            `).run(linkId, id, rel.id, "entity_related", new Date().toISOString());
-                            autoLinks.push(rel.id.slice(0, 12) + "...");
+                        // Phase 2: Find memories with similar intent (context clustering)
+                        const similarIntent = db.prepare(`
+                            SELECT id, content, entities FROM LongTermMemory 
+                            WHERE userId = ? AND id != ? AND intent = ? AND createdAt > datetime('now', '-1 hour')
+                            ORDER BY priority DESC LIMIT 3
+                        `).all(userId, id, intent) as any[];
+                        
+                        for (const rel of similarIntent) {
+                            if (autoLinks.find(l => l.id === rel.id)) continue;
+                            const relEntities = JSON.parse(rel.entities || "[]");
+                            const sharedEntity = entities.find(e => relEntities.includes(e));
+                            if (sharedEntity) {
+                                const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
+                                db.prepare(`
+                                    INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                `).run(linkId, id, rel.id, "intent_cluster", 0.6, new Date().toISOString());
+                                autoLinks.push({ id: rel.id, type: "intent", content: rel.content?.slice(0, 50) });
+                            }
+                        }
+                        
+                        // Phase 3: Cross-reference keywords for deeper linking
+                        const keywords = expandQuery(text).slice(0, 5);
+                        for (const kw of keywords) {
+                            const byKeyword = db.prepare(`
+                                SELECT id, content FROM LongTermMemory 
+                                WHERE userId = ? AND id != ? AND (content LIKE ? OR summary LIKE ?)
+                                AND id NOT IN (SELECT memoryId2 FROM MemoryLinks WHERE memoryId1 = ?)
+                                ORDER BY priority DESC LIMIT 2
+                            `).all(userId, id, `%${kw}%`, `%${kw}%`, id) as any[];
+                            
+                            for (const rel of byKeyword) {
+                                if (autoLinks.find(l => l.id === rel.id)) continue;
+                                if (autoLinks.length >= 10) break;
+                                const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
+                                db.prepare(`
+                                    INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                `).run(linkId, id, rel.id, "keyword_related", 0.4, new Date().toISOString());
+                                autoLinks.push({ id: rel.id, type: "keyword", content: rel.content?.slice(0, 50) });
+                            }
+                            if (autoLinks.length >= 10) break;
                         }
                     }
                     
@@ -260,7 +307,8 @@ export const memoryTool = {
                         priority: Math.round(priority * 100) + "%",
                         summarized: needsSummarization,
                         summaryLength: summary.length,
-                        autoLinked: autoLinks.length
+                        autoLinked: autoLinks.length,
+                        relatedMemories: autoLinks.map(l => l.id.slice(0, 15) + "...")
                     }) }] };
                 }
                 
