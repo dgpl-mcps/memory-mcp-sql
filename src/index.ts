@@ -20,6 +20,7 @@ import { hybridTools } from "./tools/hybrid.js";
 import { systemTools } from "./tools/system.js";
 import { selfImprovementTools } from "./tools/selfImprovement.js";
 import { memoryTools } from "./tools/memoryCompression.js";
+import { multiUserTools } from "./tools/multiUser.js";
 import { AuditLogger } from "./utils/logger.js";
 import { CircuitBreaker } from "./utils/circuit.js";
 import { validateEnv } from "./utils/env.js";
@@ -47,6 +48,7 @@ const ALL_TOOLS: any[] = [
     ...systemTools,
     ...selfImprovementTools,
     ...memoryTools,
+    ...multiUserTools,
 ];
 
 // V6 Hardening: Fatal fail immediately if Environment configuration is corrupted

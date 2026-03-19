@@ -265,11 +265,22 @@ export const initSqlite = () => {
             entityType TEXT NOT NULL,
             name TEXT NOT NULL,
             properties TEXT DEFAULT '{}',
+            -- Extended properties for Person/Bot/Org
+            email TEXT,
+            phone TEXT,
+            role TEXT,
+            metadata TEXT DEFAULT '{}',
+            -- Perspective ownership
+            ownerId TEXT NOT NULL,
+            perspectiveOf TEXT DEFAULT 'self',
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_entities_project_type ON Entities(userId, projectId, entityType);
         CREATE INDEX IF NOT EXISTS idx_entities_name ON Entities(userId, projectId, name);
+        CREATE INDEX IF NOT EXISTS idx_entities_owner ON Entities(ownerId);
+        CREATE INDEX IF NOT EXISTS idx_entities_email ON Entities(email);
+        CREATE INDEX IF NOT EXISTS idx_entities_perspective ON Entities(perspectiveOf);
 
         CREATE TABLE IF NOT EXISTS Relations (
             id TEXT PRIMARY KEY,
@@ -351,6 +362,12 @@ export const initSqlite = () => {
             referencedProjects TEXT DEFAULT '[]',
             -- Linked sessions for cross-session context
             linkedSessions TEXT DEFAULT '[]',
+            -- Perspective system
+            topicId TEXT,
+            perspectiveOf TEXT DEFAULT 'self',
+            sourcePersonId TEXT,
+            isShared INTEGER DEFAULT 0,
+            sharedWith TEXT DEFAULT '[]',
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             lastAccessedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -358,6 +375,8 @@ export const initSqlite = () => {
         CREATE INDEX IF NOT EXISTS idx_short_term_chat_session ON ShortTermChat(sessionId);
         CREATE INDEX IF NOT EXISTS idx_short_term_chat_project ON ShortTermChat(projectId);
         CREATE INDEX IF NOT EXISTS idx_short_term_chat_priority ON ShortTermChat(priority DESC);
+        CREATE INDEX IF NOT EXISTS idx_short_term_chat_topic ON ShortTermChat(topicId);
+        CREATE INDEX IF NOT EXISTS idx_short_term_chat_perspective ON ShortTermChat(perspectiveOf);
 
         -- Long-Term Memory (75%+ similarity required)
         CREATE TABLE IF NOT EXISTS LongTermMemory (
@@ -402,7 +421,13 @@ export const initSqlite = () => {
             previousVersionId TEXT,
             -- Archive status
             isArchived INTEGER DEFAULT 0,
-            archivedAt DATETIME
+            archivedAt DATETIME,
+            -- Perspective system
+            topicId TEXT,
+            perspectiveOf TEXT DEFAULT 'self',
+            sourcePersonId TEXT,
+            isShared INTEGER DEFAULT 0,
+            sharedWith TEXT DEFAULT '[]'
         );
         CREATE INDEX IF NOT EXISTS idx_long_term_user ON LongTermMemory(userId);
         CREATE INDEX IF NOT EXISTS idx_long_term_project ON LongTermMemory(projectId);
@@ -411,6 +436,8 @@ export const initSqlite = () => {
         CREATE INDEX IF NOT EXISTS idx_long_term_access ON LongTermMemory(lastAccessedAt DESC);
         CREATE INDEX IF NOT EXISTS idx_long_term_created ON LongTermMemory(createdAt DESC);
         CREATE INDEX IF NOT EXISTS idx_long_term_archived ON LongTermMemory(isArchived);
+        CREATE INDEX IF NOT EXISTS idx_long_term_topic ON LongTermMemory(topicId);
+        CREATE INDEX IF NOT EXISTS idx_long_term_perspective ON LongTermMemory(perspectiveOf);
 
         -- Reminders table
         CREATE TABLE IF NOT EXISTS Reminders (
@@ -492,6 +519,83 @@ export const initSqlite = () => {
         );
         CREATE INDEX IF NOT EXISTS idx_memory_index_user ON MemoryIndex(userId);
         CREATE INDEX IF NOT EXISTS idx_memory_index_keywords ON MemoryIndex(keywords);
+
+        -- Topics Table (for topic-based memory organization)
+        CREATE TABLE IF NOT EXISTS Topics (
+            id TEXT PRIMARY KEY,
+            ownerId TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            keywords TEXT DEFAULT '[]',
+            color TEXT DEFAULT '#6366f1',
+            isActive INTEGER DEFAULT 1,
+            parentTopicId TEXT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_topics_owner ON Topics(ownerId);
+        CREATE INDEX IF NOT EXISTS idx_topics_name ON Topics(ownerId, name);
+
+        -- Enhanced Sessions Table (persistent, topic, timeline, cross)
+        CREATE TABLE IF NOT EXISTS Sessions (
+            id TEXT PRIMARY KEY,
+            ownerId TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'persistent',
+            topicId TEXT,
+            title TEXT,
+            context TEXT DEFAULT '',
+            parentSessionId TEXT,
+            startTime DATETIME DEFAULT CURRENT_TIMESTAMP,
+            endTime DATETIME,
+            lastActivity DATETIME DEFAULT CURRENT_TIMESTAMP,
+            isActive INTEGER DEFAULT 1,
+            metadata TEXT DEFAULT '{}',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_owner ON Sessions(ownerId);
+        CREATE INDEX IF NOT EXISTS idx_sessions_type ON Sessions(ownerId, type);
+        CREATE INDEX IF NOT EXISTS idx_sessions_topic ON Sessions(ownerId, topicId);
+        CREATE INDEX IF NOT EXISTS idx_sessions_active ON Sessions(ownerId, isActive);
+
+        -- Timeline Entries (1hr/day granularity)
+        CREATE TABLE IF NOT EXISTS Timeline (
+            id TEXT PRIMARY KEY,
+            ownerId TEXT NOT NULL,
+            sessionId TEXT,
+            topicId TEXT,
+            perspectiveOf TEXT DEFAULT 'self',
+            sourcePersonId TEXT,
+            content TEXT NOT NULL,
+            memoryType TEXT NOT NULL DEFAULT 'general',
+            timeSlot DATETIME DEFAULT CURRENT_TIMESTAMP,
+            durationMinutes INTEGER DEFAULT 60,
+            entities TEXT DEFAULT '[]',
+            relations TEXT DEFAULT '[]',
+            priority REAL DEFAULT 0.5,
+            isShared INTEGER DEFAULT 0,
+            sharedWith TEXT DEFAULT '[]',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_timeline_owner ON Timeline(ownerId);
+        CREATE INDEX IF NOT EXISTS idx_timeline_session ON Timeline(ownerId, sessionId);
+        CREATE INDEX IF NOT EXISTS idx_timeline_topic ON Timeline(ownerId, topicId);
+        CREATE INDEX IF NOT EXISTS idx_timeline_time ON Timeline(ownerId, timeSlot DESC);
+        CREATE INDEX IF NOT EXISTS idx_timeline_perspective ON Timeline(ownerId, perspectiveOf);
+
+        -- Shared Memories (for cross-user sharing)
+        CREATE TABLE IF NOT EXISTS SharedMemories (
+            id TEXT PRIMARY KEY,
+            memoryId TEXT NOT NULL,
+            memoryType TEXT NOT NULL,
+            fromOwnerId TEXT NOT NULL,
+            toOwnerId TEXT NOT NULL,
+            perspectiveNote TEXT,
+            shareType TEXT DEFAULT 'auto',
+            isRead INTEGER DEFAULT 0,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_shared_from ON SharedMemories(fromOwnerId);
+        CREATE INDEX IF NOT EXISTS idx_shared_to ON SharedMemories(toOwnerId);
     `);
 
     if (dbConfig.useVectorSearch) {
