@@ -339,17 +339,19 @@ export const initSqlite = () => {
         );
         CREATE INDEX IF NOT EXISTS idx_working_buffer_user ON WorkingBuffer(userId);
 
-        -- Short-Term Memory (last N chats with low threshold 20%)
+        -- Short-Term Memory (memories/notes with low threshold 20%)
         CREATE TABLE IF NOT EXISTS ShortTermChat (
             id TEXT PRIMARY KEY,
             userId TEXT NOT NULL,
             projectId TEXT,
             sessionId TEXT NOT NULL,
             chatIndex INTEGER NOT NULL,
-            userQuery TEXT NOT NULL,
-            userSummary TEXT,
-            agentResponse TEXT NOT NULL,
-            agentSummary TEXT,
+            -- Memory content (note/memory from perspective of writer)
+            content TEXT NOT NULL,
+            summary TEXT,
+            -- Response/follow-up if applicable
+            response TEXT,
+            responseSummary TEXT,
             combo TEXT,
             isSummarized INTEGER DEFAULT 0,
             -- Priority/importance
@@ -383,10 +385,11 @@ export const initSqlite = () => {
             id TEXT PRIMARY KEY,
             userId TEXT NOT NULL,
             projectId TEXT,
-            userQuery TEXT NOT NULL,
-            userSummary TEXT,
-            agentResponse TEXT NOT NULL,
-            agentSummary TEXT,
+            -- Memory content and summary
+            content TEXT NOT NULL,
+            summary TEXT,
+            response TEXT,
+            responseSummary TEXT,
             combo TEXT,
             keywords TEXT DEFAULT '[]',
             entities TEXT DEFAULT '[]',
@@ -460,8 +463,8 @@ export const initSqlite = () => {
             projectId TEXT,
             sessionId TEXT NOT NULL,
             summaryIndex INTEGER NOT NULL,
-            userSummary TEXT NOT NULL,
-            agentSummary TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            responseSummary TEXT NOT NULL,
             combo TEXT,
             chatCount INTEGER NOT NULL,
             referencedTasks TEXT DEFAULT '[]',
@@ -1491,10 +1494,10 @@ export const addShortTermChat = (
     userId: string,
     projectId: string | null,
     sessionId: string,
-    userQuery: string,
-    agentResponse: string,
-    userSummary?: string,
-    agentSummary?: string,
+    content: string,
+    response: string,
+    summary?: string,
+    responseSummary?: string,
     combo?: string,
     referencedTasks: string[] = [],
     referencedKeypoints: string[] = [],
@@ -1509,9 +1512,9 @@ export const addShortTermChat = (
     const chatIndex = (maxIdx?.maxIdx ?? -1) + 1;
     
     db.prepare(`INSERT INTO ShortTermChat 
-        (id, userId, projectId, sessionId, chatIndex, userQuery, userSummary, agentResponse, agentSummary, combo, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
+        (id, userId, projectId, sessionId, chatIndex, content, summary, response, responseSummary, combo, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, userId, projectId, sessionId, chatIndex, userQuery, userSummary || "", agentResponse, agentSummary || "", combo || "", 
+        .run(id, userId, projectId, sessionId, chatIndex, content, summary || "", response, responseSummary || "", combo || "", 
              ensureJson(referencedTasks), ensureJson(referencedKeypoints), ensureJson(referencedEntities), ensureJson(referencedProjects));
     
     return { id, sessionId, chatIndex };
@@ -1546,8 +1549,8 @@ export const summarizeAndMoveToLongTerm = (
     projectId: string | null,
     sessionId: string,
     summaryIndex: number,
-    userSummary: string,
-    agentSummary: string,
+    summary: string,
+    responseSummary: string,
     combo: string,
     chatCount: number,
     referencedTasks: string[] = [],
@@ -1561,17 +1564,17 @@ export const summarizeAndMoveToLongTerm = (
     const keywords = combo.toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 10);
     
     db.prepare(`INSERT INTO LongTermMemory 
-        (id, userId, projectId, userQuery, userSummary, agentResponse, agentSummary, combo, keywords, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
+        (id, userId, projectId, content, summary, response, responseSummary, combo, keywords, referencedTasks, referencedKeypoints, referencedEntities, referencedProjects) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, userId, projectId, "", userSummary, "", agentSummary, combo, ensureJson(keywords),
+        .run(id, userId, projectId, "", summary, "", responseSummary, combo, ensureJson(keywords),
              ensureJson(referencedTasks), ensureJson(referencedKeypoints), ensureJson(referencedEntities), ensureJson(referencedProjects));
     
     // Save session summary
     const summaryId = `ss_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     db.prepare(`INSERT INTO SessionSummary 
-        (id, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount, referencedTasks, referencedKeypoints) 
+        (id, userId, projectId, sessionId, summaryIndex, summary, responseSummary, combo, chatCount, referencedTasks, referencedKeypoints) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(summaryId, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount,
+        .run(summaryId, userId, projectId, sessionId, summaryIndex, summary, responseSummary, combo, chatCount,
              ensureJson(referencedTasks), ensureJson(referencedKeypoints));
     
     return { id, movedToLongTerm: true };
@@ -1588,7 +1591,7 @@ export const searchShortTermMemory = (
 ) => {
     const pattern = `%${query}%`;
     let sql = `SELECT * FROM ShortTermChat WHERE userId = ? AND 
-        (userQuery LIKE ? OR userSummary LIKE ? OR agentResponse LIKE ? OR agentSummary LIKE ? OR combo LIKE ?)`;
+        (content LIKE ? OR summary LIKE ? OR response LIKE ? OR responseSummary LIKE ? OR combo LIKE ?)`;
     const params: any[] = [userId, pattern, pattern, pattern, pattern, pattern];
     
     if (sessionId) { sql += ` AND sessionId = ?`; params.push(sessionId); }
@@ -1601,7 +1604,7 @@ export const searchShortTermMemory = (
     
     // Calculate improved similarity with fuzzy matching
     return rows.map(r => {
-        const combined = (r.userQuery || "") + " " + (r.userSummary || "") + " " + (r.agentResponse || "") + " " + (r.agentSummary || "") + " " + (r.combo || "");
+        const combined = (r.content || "") + " " + (r.summary || "") + " " + (r.response || "") + " " + (r.responseSummary || "") + " " + (r.combo || "");
         const similarity = calculateFuzzySimilarity(query, combined);
         
         return { ...r, similarity, source: "short_term" };
@@ -1650,7 +1653,7 @@ export const searchLongTermMemory = (
     // Use text search for initial filter, then calculate actual similarity
     const pattern = `%${query}%`;
     let sql = `SELECT * FROM LongTermMemory WHERE userId = ? AND 
-        (userQuery LIKE ? OR userSummary LIKE ? OR agentResponse LIKE ? OR combo LIKE ?)`;
+        (content LIKE ? OR summary LIKE ? OR response LIKE ? OR combo LIKE ?)`;
     const params: any[] = [userId, pattern, pattern, pattern, pattern];
     
     if (projectId) { sql += ` AND projectId = ?`; params.push(projectId); }
@@ -1660,7 +1663,7 @@ export const searchLongTermMemory = (
     const rows = db.prepare(sql).all(...params) as any[];
     
     return rows.map(r => {
-        const combined = (r.userQuery || "") + " " + (r.userSummary || "") + " " + (r.agentResponse || "") + " " + (r.agentSummary || "") + " " + (r.combo || "");
+        const combined = (r.content || "") + " " + (r.summary || "") + " " + (r.response || "") + " " + (r.responseSummary || "") + " " + (r.combo || "");
         const similarity = calculateFuzzySimilarity(query, combined);
         
         return { ...r, similarity, source: "long_term" };
@@ -1701,12 +1704,12 @@ export const clearShortTermMemory = (
 
 export const updateChatSummary = (
     chatId: string,
-    userSummary: string,
-    agentSummary: string,
+    summary: string,
+    responseSummary: string,
     combo: string
 ) => {
-    db.prepare(`UPDATE ShortTermChat SET userSummary = ?, agentSummary = ?, combo = ?, isSummarized = 1 WHERE id = ?`)
-        .run(userSummary, agentSummary, combo, chatId);
+    db.prepare(`UPDATE ShortTermChat SET summary = ?, responseSummary = ?, combo = ?, isSummarized = 1 WHERE id = ?`)
+        .run(summary, responseSummary, combo, chatId);
     return { success: true };
 };
 
@@ -1770,12 +1773,12 @@ export const findCrossSessionMemories = (
         SELECT * FROM LongTermMemory 
         WHERE userId = ? 
         AND sessionId != ?
-        AND (userQuery LIKE ? OR userSummary LIKE ? OR combo LIKE ?)
+        AND (content LIKE ? OR summary LIKE ? OR combo LIKE ?)
     `).all(userId, currentSessionId, pattern, pattern, pattern) as any[];
     
     // Calculate similarity for each
     return memories.map(r => {
-        const combined = (r.userQuery || "") + " " + (r.userSummary || "") + " " + (r.combo || "");
+        const combined = (r.content || "") + " " + (r.summary || "") + " " + (r.combo || "");
         const similarity = calculateFuzzySimilarity(query, combined);
         
         // Check if already linked
@@ -1804,7 +1807,7 @@ export const cleanupOldMemories = (userId: string, daysOld: number = 90, keepPin
 
 // Memory deduplication
 export const findDuplicateMemories = (userId: string, similarityThreshold: number = 90) => {
-    const memories = db.prepare(`SELECT id, userQuery, userSummary, combo FROM LongTermMemory WHERE userId = ?`).all(userId) as any[];
+    const memories = db.prepare(`SELECT id, content, summary, combo FROM LongTermMemory WHERE userId = ?`).all(userId) as any[];
     
     const duplicates: any[] = [];
     const checked = new Set<string>();
@@ -1815,8 +1818,8 @@ export const findDuplicateMemories = (userId: string, similarityThreshold: numbe
         for (let j = i + 1; j < memories.length; j++) {
             if (checked.has(memories[j].id)) continue;
             
-            const combined1 = (memories[i].userQuery || "") + " " + (memories[i].userSummary || "");
-            const combined2 = (memories[j].userQuery || "") + " " + (memories[j].userSummary || "");
+            const combined1 = (memories[i].content || "") + " " + (memories[i].summary || "");
+            const combined2 = (memories[j].content || "") + " " + (memories[j].summary || "");
             const similarity = calculateFuzzySimilarity(combined1, combined2);
             
             if (similarity >= similarityThreshold) {
@@ -1849,7 +1852,7 @@ export const mergeDuplicateMemories = (originalId: string, duplicateId: string) 
     }
     
     // Mark duplicate as merged (keep for reference)
-    db.prepare(`UPDATE LongTermMemory SET userQuery = '[MERGED] ' || userQuery WHERE id = ?`).run(duplicateId);
+    db.prepare(`UPDATE LongTermMemory SET content = '[MERGED] ' || content WHERE id = ?`).run(duplicateId);
     
     return { success: true };
 };
@@ -1877,7 +1880,7 @@ export const getOptimizedContext = (
     
     // Add summaries first (most compressed)
     for (const s of summaries.reverse()) {
-        const text = `## Summary ${s.summaryIndex}\n${s.userSummary}\n${s.agentSummary}\n`;
+        const text = `## Summary ${s.summaryIndex}\n${s.summary}\n${s.responseSummary}\n`;
         if (totalChars + text.length > maxChars) break;
         context = text + context;
         totalChars += text.length;
@@ -1885,7 +1888,7 @@ export const getOptimizedContext = (
     
     // Add recent chats
     for (const c of recentChats.reverse()) {
-        const text = `Q: ${(c.userQuery || '').slice(0, 200)}\nA: ${(c.agentResponse || '').slice(0, 300)}\n`;
+        const text = `Q: ${(c.content || '').slice(0, 200)}\nA: ${(c.response || '').slice(0, 300)}\n`;
         if (totalChars + text.length > maxChars) break;
         context += text;
         totalChars += text.length;
@@ -1905,24 +1908,24 @@ export const createIncrementalSummary = (
     projectId: string | null,
     sessionId: string,
     parentSummaryId: string | null,
-    userSummary: string,
-    agentSummary: string,
+    summary: string,
+    responseSummary: string,
     combo: string,
     chatCount: number
 ) => {
     const id = `inc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     
     db.prepare(`INSERT INTO LongTermMemory 
-        (id, userId, projectId, sessionId, userQuery, userSummary, agentResponse, agentSummary, combo, isIncremental, parentSummaryId, priority) 
+        (id, userId, projectId, sessionId, content, summary, response, responseSummary, combo, isIncremental, parentSummaryId, priority) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
-        .run(id, userId, projectId, sessionId, `Incremental summary #${chatCount}`, userSummary, agentSummary || "", agentSummary, combo, parentSummaryId || null, 0.6);
+        .run(id, userId, projectId, sessionId, `Incremental summary #${chatCount}`, summary, responseSummary || "", responseSummary, combo, parentSummaryId || null, 0.6);
     
     // Create session summary too
     const summaryId = `ss_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     db.prepare(`INSERT INTO SessionSummary 
-        (id, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount) 
+        (id, userId, projectId, sessionId, summaryIndex, summary, responseSummary, combo, chatCount) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(summaryId, userId, projectId, sessionId, chatCount, userSummary, agentSummary, combo, chatCount);
+        .run(summaryId, userId, projectId, sessionId, chatCount, summary, responseSummary, combo, chatCount);
     
     return { id, type: "incremental" };
 };
@@ -1961,7 +1964,7 @@ export const cleanupExpiredMemories = (userId: string) => {
 export const getExpiringMemories = (userId: string, daysAhead: number = 7) => {
     const now = new Date();
     const ahead = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000).toISOString();
-    return db.prepare(`SELECT id, userQuery, expiresAt FROM LongTermMemory WHERE userId = ? AND expiresAt IS NOT NULL AND expiresAt BETWEEN ? AND ? ORDER BY expiresAt`).all(userId, now.toISOString(), ahead);
+    return db.prepare(`SELECT id, content, expiresAt FROM LongTermMemory WHERE userId = ? AND expiresAt IS NOT NULL AND expiresAt BETWEEN ? AND ? ORDER BY expiresAt`).all(userId, now.toISOString(), ahead);
 };
 
 // Search by date range
@@ -2022,14 +2025,14 @@ export const updateMemoryVersion = (memoryId: string, newContent: string, userId
     db.prepare(`UPDATE LongTermMemory SET previousVersionId = id, version = ? WHERE id = ?`).run(newVersion, memoryId);
     
     // Store previous version in a simple way (as part of metadata)
-    const prev = db.prepare(`SELECT userQuery, agentResponse FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+    const prev = db.prepare(`SELECT content, response FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
     
     return { success: true, version: newVersion, previousContent: prev };
 };
 
 export const getMemoryVersions = (memoryId: string) => {
     // Get current and previous version info
-    const row = db.prepare(`SELECT id, version, previousVersionId, userQuery, createdAt FROM LongTermMemory WHERE id = ? OR previousVersionId = ?`).all(memoryId, memoryId) as any[];
+    const row = db.prepare(`SELECT id, version, previousVersionId, content, createdAt FROM LongTermMemory WHERE id = ? OR previousVersionId = ?`).all(memoryId, memoryId) as any[];
     return row;
 };
 
@@ -2081,13 +2084,13 @@ export const calculateQualityScore = (memory: any): number => {
     let score = 0.5;
     
     // Length bonus (not too short, not too long)
-    const queryLen = (memory.userQuery || '').length;
-    const respLen = (memory.agentResponse || '').length;
+    const queryLen = (memory.content || '').length;
+    const respLen = (memory.response || '').length;
     if (queryLen > 20 && queryLen < 500) score += 0.1;
     if (respLen > 50 && respLen < 2000) score += 0.1;
     
     // Completeness bonus
-    const hasSummary = memory.userSummary && memory.userSummary.length > 10;
+    const hasSummary = memory.summary && memory.summary.length > 10;
     const hasKeywords = memory.keywords && (() => { try { return JSON.parse(memory.keywords).length > 0; } catch { return false; } })();
     const hasEntities = memory.entities && (() => { try { return JSON.parse(memory.entities).length > 0; } catch { return false; } })();
     if (hasSummary) score += 0.1;
@@ -2175,7 +2178,7 @@ export const mergeMemories = (targetId: string, sourceId: string) => {
         .run(JSON.stringify(mergedKeywords), JSON.stringify(mergedEntities), JSON.stringify(mergedSessions), targetId);
     
     // Mark source as merged
-    db.prepare(`UPDATE LongTermMemory SET userQuery = '[MERGED] ' || userQuery WHERE id = ?`).run(sourceId);
+    db.prepare(`UPDATE LongTermMemory SET content = '[MERGED] ' || content WHERE id = ?`).run(sourceId);
     
     return { success: true, mergedKeywords: mergedKeywords.length, mergedEntities: mergedEntities.length };
 };

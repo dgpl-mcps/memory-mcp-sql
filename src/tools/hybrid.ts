@@ -27,7 +27,7 @@ export const hybridTools = [
             try {
                 // 1. Dynamic Short Term Memory Search
                 let stmSql = `SELECT * FROM ShortTermChat WHERE 
-                    (userQuery LIKE ? OR userSummary LIKE ? OR agentResponse LIKE ? OR agentSummary LIKE ? OR combo LIKE ?)`;
+                    (content LIKE ? OR summary LIKE ? OR response LIKE ? OR responseSummary LIKE ? OR combo LIKE ?)`;
                 const pattern = `%${query}%`;
                 const params: any[] = [pattern, pattern, pattern, pattern, pattern];
                 

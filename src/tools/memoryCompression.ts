@@ -68,7 +68,7 @@ function summarize(text: string, max = 400): string {
 // Memory completeness score - how complete is this memory?
 function completenessScore(memory: any): number {
     let score = 0;
-    const fields = ['userQuery', 'userSummary', 'agentResponse', 'agentSummary', 'combo', 'referencedTasks', 'referencedEntities'];
+    const fields = ['content', 'summary', 'response', 'responseSummary', 'combo', 'referencedTasks', 'referencedEntities'];
     fields.forEach(f => {
         if (memory[f] && (typeof memory[f] !== 'string' || memory[f].length > 0)) score++;
     });
@@ -104,7 +104,7 @@ function smartTrim(context: string, maxChars: number): string {
 function analyzeFlow(chats: any[]): { type: string; summary: string; complexity: number } {
     if (!chats.length) return { type: "empty", summary: "No conversation", complexity: 0 };
     
-    const intents = chats.map(c => detectIntent(c.userQuery || ''));
+    const intents = chats.map(c => detectIntent(c.content || ''));
     const questionCount = intents.filter(i => i === 'question').length;
     const errorCount = intents.filter(i => i === 'error').length;
     const successCount = intents.filter(i => i === 'success').length;
@@ -254,7 +254,7 @@ function combo(user: string, agent: string, prog?: string): string {
 // Calculate relevance with multiple factors
 function calculateRelevance(query: string, memory: any): number {
     const q = query.toLowerCase();
-    const m = ((memory.userQuery||'') + ' ' + (memory.userSummary||'') + ' ' + (memory.agentSummary||'')).toLowerCase();
+    const m = ((memory.content||'') + ' ' + (memory.summary||'') + ' ' + (memory.responseSummary||'')).toLowerCase();
     
     // Exact match bonus
     if (m.includes(q)) return 100;
@@ -273,7 +273,7 @@ function calculateRelevance(query: string, memory: any): number {
     const posBonus = firstMatch >= 0 ? Math.max(0, 15 - firstMatch * 2) : 0;
     
     // Intent match bonus
-    const memIntent = detectIntent(memory.userQuery||'');
+    const memIntent = detectIntent(memory.content||'');
     const queryIntent = detectIntent(query);
     const intentBonus = memIntent === queryIntent ? 10 : 0;
     
@@ -488,7 +488,7 @@ export const memoryTools = [
                     flow: flow.type,
                     complexity: flow.complexity + '%',
                     summary: flow.summary,
-                    recent: chats.reverse().map(c => ({ i: c.chatIndex, u: c.userQuery?.slice(0,60), a: c.agentResponse?.slice(0,80) })),
+                    recent: chats.reverse().map(c => ({ i: c.chatIndex, u: c.content?.slice(0,60), a: c.response?.slice(0,80) })),
                     search_context: { limit, offset, source: "memory_history" }
                 }, null, 2) }] };
             } catch (err: any) {
@@ -665,13 +665,13 @@ export const memoryTools = [
                 if (!m) return { isError: true, content: [{ type: "text", text: "Not found" }] };
                 
                 const completeness = completenessScore(m);
-                const actions = extractActionItems((m.userQuery||'') + ' ' + (m.agentResponse||''));
+                const actions = extractActionItems((m.content||'') + ' ' + (m.response||''));
                 
                 return { content: [{ type: "text", text: JSON.stringify({
                     id: m.id,
-                    query: m.userQuery,
-                    summary: m.userSummary,
-                    response: m.agentSummary,
+                    query: m.content,
+                    summary: m.summary,
+                    response: m.responseSummary,
                     priority: Math.round((m.priority||0.5)*100)+'%',
                     pinned: m.isPinned===1,
                     accesses: m.accessCount,
@@ -749,29 +749,29 @@ export const memoryTools = [
                 const insights: any = { questions: [], errors: [], progress: [], patterns: [] };
                 
                 recent.forEach((m: any) => {
-                    const txt = ((m.userQuery||'') + ' ' + (m.agentResponse||'')).toLowerCase();
+                    const txt = ((m.content||'') + ' ' + (m.response||'')).toLowerCase();
                     
                     // Questions asked
-                    if (m.userQuery?.match(/^(what|why|how|when|where|who|is|are|can|do)/i)) {
-                        insights.questions.push(m.userQuery?.slice(0,80));
+                    if (m.content?.match(/^(what|why|how|when|where|who|is|are|can|do)/i)) {
+                        insights.questions.push(m.content?.slice(0,80));
                     }
                     
                     // Errors/issues
                     if (/error|fail|bug|issue|problem|exception/i.test(txt)) {
-                        const taskMatch = m.userQuery?.match(/#(\d+)/);
-                        insights.errors.push({ task: taskMatch?.[1], issue: m.userQuery?.slice(0,60) });
+                        const taskMatch = m.content?.match(/#(\d+)/);
+                        insights.errors.push({ task: taskMatch?.[1], issue: m.content?.slice(0,60) });
                     }
                     
                     // Progress/completion
                     if (/done|completed|finished|success|fixed|deployed/i.test(txt)) {
-                        insights.progress.push(m.userSummary || m.userQuery?.slice(0,60));
+                        insights.progress.push(m.summary || m.content?.slice(0,60));
                     }
                 });
                 
                 // Find patterns - most common keywords
                 const keywordCounts: Record<string, number> = {};
                 recent.forEach((m: any) => {
-                    const kw = extractKeywords(m.userQuery || '');
+                    const kw = extractKeywords(m.content || '');
                     kw.forEach(k => keywordCounts[k] = (keywordCounts[k] || 0) + 1);
                 });
                 
@@ -818,12 +818,12 @@ export const memoryTools = [
                 const chats = getShortTermChats(userId, sessionId, undefined, 10);
                 
                 let context = "## Session Summaries\n";
-                summaries.slice(-3).forEach((s: any) => { context += `- ${s.userSummary}\n`; });
+                summaries.slice(-3).forEach((s: any) => { context += `- ${s.summary}\n`; });
                 
                 context += "\n## Recent Messages\n";
                 chats.reverse().forEach((c: any) => {
-                    context += `Q: ${smartTrim(c.userQuery||'', 100)}\n`;
-                    context += `A: ${smartTrim(c.agentResponse||'', 150)}\n\n`;
+                    context += `Q: ${smartTrim(c.content||'', 100)}\n`;
+                    context += `A: ${smartTrim(c.response||'', 150)}\n\n`;
                 });
                 
                 const trimmed = smartTrim(context, maxChars);
@@ -877,12 +877,12 @@ export const memoryTools = [
                 }
 
                 // Analyze intents
-                const intents = chats.map(c => detectIntent(c.userQuery || ''));
+                const intents = chats.map(c => detectIntent(c.content || ''));
                 const intentCounts: Record<string, number> = {};
                 intents.forEach(i => intentCounts[i] = (intentCounts[i] || 0) + 1);
 
                 // Extract top keywords
-                const allText = chats.map(c => c.userQuery + ' ' + c.agentResponse).join(' ');
+                const allText = chats.map(c => c.content + ' ' + c.response).join(' ');
                 const keywords = extractKeywords(allText).slice(0, 10);
 
                 // Calculate topics (entity clusters)
@@ -956,9 +956,9 @@ export const memoryTools = [
                     shortTermChatsCount: shortTerm.length,
                     longTermMemories: longTerm.map(m => ({
                         id: m.id,
-                        query: m.userQuery,
-                        summary: m.userSummary,
-                        response: m.agentSummary,
+                        query: m.content,
+                        summary: m.summary,
+                        response: m.responseSummary,
                         keywords: (() => { try { return JSON.parse(m.keywords||"[]"); } catch { return []; } })(),
                         entities: (() => { try { return JSON.parse(m.entities||"[]"); } catch { return []; } })(),
                         priority: m.priority,
@@ -968,15 +968,15 @@ export const memoryTools = [
                     sessionSummaries: summaries.map(s => ({
                         id: s.id,
                         sessionId: s.sessionId,
-                        summary: s.userSummary,
+                        summary: s.summary,
                         chatCount: s.chatCount,
                         createdAt: s.createdAt
                     })),
                     shortTermChats: shortTerm.map(c => ({
                         id: c.id,
                         sessionId: c.sessionId,
-                        query: c.userQuery,
-                        response: c.agentResponse,
+                        query: c.content,
+                        response: c.response,
                         createdAt: c.createdAt
                     }))
                 };
@@ -1017,7 +1017,7 @@ export const memoryTools = [
                         try {
                             const id = `ltm_imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
                             db.prepare(`INSERT INTO LongTermMemory 
-                                (id, userId, projectId, userQuery, userSummary, agentResponse, agentSummary, combo, keywords, entities, priority, isPinned, createdAt) 
+                                (id, userId, projectId, content, summary, response, responseSummary, combo, keywords, entities, priority, isPinned, createdAt) 
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
                                 .run(id, userId, projectId || null, m.query, m.summary, m.response || '', m.summary || '', '', 
                                     JSON.stringify(m.keywords || []), JSON.stringify(m.entities || []), m.priority || 0.5, m.pinned ? 1 : 0, m.createdAt || new Date().toISOString());
@@ -1032,7 +1032,7 @@ export const memoryTools = [
                         try {
                             const id = `ss_imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
                             db.prepare(`INSERT INTO SessionSummary 
-                                (id, userId, projectId, sessionId, summaryIndex, userSummary, agentSummary, combo, chatCount, createdAt) 
+                                (id, userId, projectId, sessionId, summaryIndex, summary, responseSummary, combo, chatCount, createdAt) 
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
                                 .run(id, userId, projectId || null, s.sessionId || 'imported', 0, s.summary, '', '', s.chatCount || 0, s.createdAt || new Date().toISOString());
                             imported.summaries++;
@@ -1163,8 +1163,8 @@ export const memoryTools = [
                     count: results.length,
                     memories: results.slice(offset, offset + limit).map((r: any) => ({
                         id: r.id,
-                        query: r.userQuery?.slice(0,60),
-                        summary: r.userSummary?.slice(0,80),
+                        query: r.content?.slice(0,60),
+                        summary: r.summary?.slice(0,80),
                         created: r.createdAt,
                         priority: Math.round((r.priority||0.5)*100)+'%'
                     })),
@@ -1243,8 +1243,8 @@ export const memoryTools = [
                     count: results.length,
                     memories: results.slice(offset, offset + limit).map((r: any) => ({
                         id: r.id,
-                        query: r.userQuery?.slice(0,60),
-                        summary: r.userSummary?.slice(0,80),
+                        query: r.content?.slice(0,60),
+                        summary: r.summary?.slice(0,80),
                         tags: (() => { try { return JSON.parse(r.tags||"[]"); } catch { return []; } })()
                     })),
                     search_context: { limit, offset, source: "memory_search_by_tag" }
@@ -1283,11 +1283,11 @@ export const memoryTools = [
                 const { userId, query } = validatePayload(schema, args);
 
                 // Get all memories for fuzzy matching
-                const all = db.prepare(`SELECT id, userQuery, userSummary, agentResponse FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 100`).all(userId) as any[];
+                const all = db.prepare(`SELECT id, content, summary, response FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 100`).all(userId) as any[];
                 
                 // Simple fuzzy match using substring with wildcards
                 const fuzzyResults = all.map(m => {
-                    const text = ((m.userQuery||'') + ' ' + (m.userSummary||'')).toLowerCase();
+                    const text = ((m.content||'') + ' ' + (m.summary||'')).toLowerCase();
                     const q = query.toLowerCase();
                     
                     // Check for common typos (1 character difference)
@@ -1313,7 +1313,7 @@ export const memoryTools = [
                     found: fuzzyResults.length,
                     memories: fuzzyResults.slice(offset, offset + limit).map((r: any) => ({
                         id: r.id,
-                        query: r.userQuery?.slice(0,60),
+                        query: r.content?.slice(0,60),
                         score: Math.round(r.score*100)+'%'
                     })),
                     search_context: { limit, offset, threshold: threshold * 100, source: "memory_fuzzy_recall" }
@@ -1423,7 +1423,7 @@ export const memoryTools = [
                     threshold: Math.round(minScore*100)+'%',
                     memories: results.map((r: any) => ({
                         id: r.id,
-                        query: r.userQuery?.slice(0,60),
+                        query: r.content?.slice(0,60),
                         quality: Math.round((r.qualityScore||0.5)*100)+'%',
                         likes: r.likes || 0,
                         created: r.createdAt
@@ -1544,7 +1544,7 @@ export const memoryTools = [
                     count: results.length,
                     memories: results.map((r: any) => ({
                         id: r.id,
-                        query: r.userQuery?.slice(0,60),
+                        query: r.content?.slice(0,60),
                         archivedAt: r.archivedAt
                     }))
                 }, null, 2) }] };
