@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "memory mcp": {
+      "type": "local",
+      "command": [
+        "node",
+        "/save_data/projects/linux-admin-agent/ext/memory-mcp-sql/build/index.js"
+      ]
+    }
+  }
+}
