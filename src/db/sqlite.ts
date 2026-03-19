@@ -475,6 +475,75 @@ export const initSqlite = () => {
         CREATE INDEX IF NOT EXISTS idx_session_summary_user ON SessionSummary(userId);
         CREATE INDEX IF NOT EXISTS idx_session_summary_session ON SessionSummary(sessionId);
 
+        -- User Persona & Preferences
+        CREATE TABLE IF NOT EXISTS UserPersona (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL UNIQUE,
+            name TEXT,
+            traits TEXT DEFAULT '{}',
+            communicationStyle TEXT DEFAULT 'friendly',
+            preferredTopics TEXT DEFAULT '[]',
+            workStyle TEXT DEFAULT 'collaborative',
+            quirks TEXT DEFAULT '[]',
+            reminders TEXT DEFAULT '[]',
+            lastMood TEXT,
+            moodHistory TEXT DEFAULT '[]',
+            learningData TEXT DEFAULT '{}',
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_persona_user ON UserPersona(userId);
+
+        -- Emotional Memory (moods, preferences, feelings)
+        CREATE TABLE IF NOT EXISTS EmotionalMemory (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            mood TEXT NOT NULL,
+            triggers TEXT DEFAULT '[]',
+            context TEXT,
+            intensity INTEGER DEFAULT 5,
+            relatedMemoryId TEXT,
+            sessionId TEXT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_emotional_user ON EmotionalMemory(userId);
+        CREATE INDEX IF NOT EXISTS idx_emotional_mood ON EmotionalMemory(mood);
+
+        -- Learning Log (adaptive intelligence)
+        CREATE TABLE IF NOT EXISTS LearningLog (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            type TEXT NOT NULL,
+            pattern TEXT,
+            data TEXT DEFAULT '{}',
+            confidence REAL DEFAULT 0.5,
+            usageCount INTEGER DEFAULT 1,
+            lastUsedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_learning_user ON LearningLog(userId);
+        CREATE INDEX IF NOT EXISTS idx_learning_type ON LearningLog(type);
+
+        -- Memory Reminders (proactive)
+        CREATE TABLE IF NOT EXISTS MemoryReminders (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            memoryId TEXT,
+            reminderType TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            triggerCondition TEXT,
+            relatedEntities TEXT DEFAULT '[]',
+            priority INTEGER DEFAULT 5,
+            status TEXT DEFAULT 'pending',
+            snoozedUntil DATETIME,
+            completedAt DATETIME,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_reminders_user ON MemoryReminders(userId);
+        CREATE INDEX IF NOT EXISTS idx_reminders_status ON MemoryReminders(status);
+        CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON MemoryReminders(triggerCondition);
+
         -- Conversation Memory (for summary compression with raw fallback)
         CREATE TABLE IF NOT EXISTS ConversationMemory (
             id TEXT PRIMARY KEY,

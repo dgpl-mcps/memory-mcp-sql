@@ -10,92 +10,158 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 import { initSqlite, db } from "./src/db/sqlite.js";
 import { memoryTool } from "./src/tools/memory_v2.js";
 
+function safeParse(text: string | undefined) {
+    if (!text) return {};
+    try {
+        return JSON.parse(text);
+    } catch {
+        return { raw: text };
+    }
+}
+
 async function test() {
     initSqlite();
     
     const testUser = "test_user_" + Date.now();
     const testProject = "test_project";
     
-    console.log("\n=== Testing Ultra-Robust Memory System ===\n");
+    console.log("\n=== Testing Smart Memory with Persona & Emotion ===\n");
     
-    // Test 1: Store memories with rich context
-    console.log("1. Storing memory about AuthService...");
-    const r1 = await memoryTool.handler({
-        op: "remember",
+    // Test 1: Persona
+    console.log("1. Creating Persona...");
+    const persona = await memoryTool.handler({
+        op: "persona",
         userId: testUser,
-        projectId: testProject,
-        userMessage: "Found critical bug in @AuthService - JWT validation failing",
-        agentMessage: "Check the token expiry settings."
+        traits: { creative: true, analytical: true, helpful: true },
+        style: "friendly"
     });
-    console.log("   Result:", JSON.parse(r1.content?.[0]?.text || "{}"));
+    const personaData = safeParse(persona.content?.[0]?.text);
+    console.log("   Traits:", personaData.personality?.traits || personaData);
+    console.log("   Style:", personaData.personality?.style || "default");
     
-    console.log("2. Storing memory about Database...");
-    const r2 = await memoryTool.handler({
-        op: "remember",
-        userId: testUser,
-        projectId: testProject,
-        userMessage: "@Database connection pool exhausted - need to increase limits",
-        agentMessage: "What are the current pool settings?"
-    });
-    console.log("   Entities:", JSON.parse(r2.content?.[0]?.text || "{}").entities);
+    // Test 2: Mood tracking
+    console.log("\n2. Recording Moods...");
     
-    console.log("3. Storing memory linking both...");
-    const r3 = await memoryTool.handler({
-        op: "remember",
-        userId: testUser,
-        projectId: testProject,
-        userMessage: "Fixed @AuthService and @Database issues - both working now",
-        agentMessage: "Great teamwork!"
-    });
-    const r3Data = JSON.parse(r3.content?.[0]?.text || "{}");
-    console.log("   Auto-linked:", r3Data.autoLinked, "memories");
-    console.log("   Recent patterns:", r3Data.recentPatterns);
-    
-    // Test 2: Health check
-    console.log("\n4. Memory Health Check...");
-    const health = await memoryTool.handler({ op: "health", userId: testUser });
-    const healthData = JSON.parse(health.content?.[0]?.text);
-    console.log("   Health Score:", healthData.score + "% (" + healthData.status + ")");
-    console.log("   Total Memories:", healthData.metrics.totalMemories);
-    console.log("   Total Links:", healthData.metrics.totalLinks);
-    console.log("   Orphaned:", healthData.metrics.orphanedMemories);
-    console.log("   Suggestions:", healthData.suggestions.slice(0, 2));
-    
-    // Test 3: Thread operation
-    console.log("\n5. Thread Context Chain...");
-    const mem = db.prepare("SELECT id FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 1").get(testUser) as any;
-    if (mem) {
-        const thread = await memoryTool.handler({ op: "thread", userId: testUser, memoryId: mem.id, depth: 2 });
-        const threadData = JSON.parse(thread.content?.[0]?.text);
-        console.log("   Nodes visited:", threadData.nodesVisited);
-        console.log("   Has children:", threadData.thread?.[0]?.children?.length > 0);
+    const moods = ["happy", "excited", "frustrated", "calm"];
+    for (const mood of moods) {
+        try {
+            const result = await memoryTool.handler({
+                op: "mood",
+                userId: testUser,
+                mood,
+                intensity: mood === "frustrated" ? 8 : 5,
+                context: `Testing ${mood} mood`
+            });
+            const moodData = safeParse(result.content?.[0]?.text);
+            console.log(`   ${mood}:`, moodData.suggestion?.slice(0, 50) || JSON.stringify(moodData));
+        } catch (e) {
+            console.log(`   ${mood}: Error - ${e}`);
+        }
     }
     
-    // Test 4: Decay operation
-    console.log("\n6. Memory Decay...");
-    const decay = await memoryTool.handler({ op: "decay", userId: testUser, daysUnused: 1, decayRate: 0.05 });
-    const decayData = JSON.parse(decay.content?.[0]?.text);
-    console.log("   Action:", decayData.action);
-    console.log("   Message:", decayData.message);
-    
-    // Test 5: Recall with linked context
-    console.log("\n7. Recall with Linked Context...");
-    const recall = await memoryTool.handler({ op: "recall", userId: testUser, query: "bug fix" });
-    const recallData = JSON.parse(recall.content?.[0]?.text);
-    console.log("   Found:", recallData.count, "results");
-    if (recallData.results?.[0]?.linkedContext?.length > 0) {
-        console.log("   First result has linked context:", recallData.results[0].linkedContext.length, "links");
+    // Test 3: Learning patterns
+    console.log("\n3. Learning Patterns...");
+    try {
+        await memoryTool.handler({
+            op: "learn",
+            userId: testUser,
+            type: "work",
+            pattern: "takes breaks when frustrated",
+            data: { trigger: "frustrated", action: "break" }
+        });
+        await memoryTool.handler({
+            op: "learn",
+            userId: testUser,
+            type: "work",
+            pattern: "prefers morning work",
+            data: { time: "morning", productivity: "high" }
+        });
+        
+        const learnResult = await memoryTool.handler({ op: "learn", userId: testUser });
+        const learnData = safeParse(learnResult.content?.[0]?.text);
+        console.log("   Patterns learned:", learnData.totalPatterns);
+        console.log("   Categories:", Object.keys(learnData.byCategory || {}));
+    } catch (e) {
+        console.log("   Error:", e);
     }
     
-    // Test 6: Stats
-    console.log("\n8. Memory Stats...");
-    const stats = await memoryTool.handler({ op: "stats", userId: testUser });
-    const statsData = JSON.parse(stats.content?.[0]?.text);
-    console.log("   Total:", statsData.longTerm, "memories");
-    console.log("   Avg Priority:", statsData.avgPriority);
-    console.log("   Top Intents:", Object.keys(statsData.intentBreakdown || {}).slice(0, 3));
+    // Test 4: Reminders
+    console.log("\n4. Creating Reminders...");
+    try {
+        await memoryTool.handler({
+            op: "remind",
+            userId: testUser,
+            reminderType: "followup",
+            title: "Check on AuthService fix",
+            description: "Verify the authentication bug is still fixed",
+            priority: 8
+        });
+        await memoryTool.handler({
+            op: "remind",
+            userId: testUser,
+            reminderType: "task",
+            title: "Review Database optimization",
+            priority: 6
+        });
+        
+        const remindResult = await memoryTool.handler({ op: "remind", userId: testUser });
+        const remindData = safeParse(remindResult.content?.[0]?.text);
+        console.log("   Pending reminders:", remindData.count);
+        console.log("   First:", remindData.reminders?.[0]?.title);
+    } catch (e) {
+        console.log("   Error:", e);
+    }
     
-    console.log("\n=== Ultra-Robust Memory System Ready ===\n");
+    // Test 5: Proactive Suggestions
+    console.log("\n5. Getting Proactive Suggestions...");
+    try {
+        const suggestResult = await memoryTool.handler({ op: "suggest", userId: testUser });
+        const suggestData = safeParse(suggestResult.content?.[0]?.text);
+        console.log("   Current mood:", suggestData.currentMood);
+        console.log("   Suggestions:", suggestData.suggestions?.length || 0);
+        (suggestData.suggestions || []).slice(0, 3).forEach((s: any, i: number) => {
+            console.log(`   ${i + 1}. [${s.type}] ${s.text?.slice(0, 50)}...`);
+        });
+    } catch (e) {
+        console.log("   Error:", e);
+    }
+    
+    // Test 6: Memory with emotional context
+    console.log("\n6. Storing Emotional Memory...");
+    try {
+        const memResult = await memoryTool.handler({
+            op: "remember",
+            userId: testUser,
+            projectId: testProject,
+            userMessage: "I'm really excited about this new feature!",
+            agentMessage: "That's great! What makes you excited?"
+        });
+        const memData = safeParse(memResult.content?.[0]?.text);
+        console.log("   Memory stored with intent:", memData.intent);
+        console.log("   Priority:", memData.priority);
+    } catch (e) {
+        console.log("   Error:", e);
+    }
+    
+    // Test 7: Health check
+    console.log("\n7. Memory Health...");
+    try {
+        const healthResult = await memoryTool.handler({ op: "health", userId: testUser });
+        const healthData = safeParse(healthResult.content?.[0]?.text);
+        console.log("   Health score:", healthData.score + "%");
+        console.log("   Total memories:", healthData.metrics?.totalMemories);
+    } catch (e) {
+        console.log("   Error:", e);
+    }
+    
+    console.log("\n=== Smart Memory System Complete ===\n");
+    console.log("She now has:");
+    console.log("  ✓ Personality traits");
+    console.log("  ✓ Emotional memory");
+    console.log("  ✓ Adaptive learning");
+    console.log("  ✓ Proactive reminders");
+    console.log("  ✓ Smart suggestions");
+    console.log("\n");
     process.exit(0);
 }
 

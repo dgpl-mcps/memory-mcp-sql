@@ -157,17 +157,32 @@ export const memoryTool = {
 | thread | Get memory with full linked context chain |
 | health | Memory health & optimization suggestions |
 | decay | Decay unused memories |
+| persona | User personality & preferences |
+| mood | Track emotional state |
+| learn | Adaptive learning patterns |
+| remind | Proactive memory reminders |
+| suggest | Get smart suggestions |
+
+**Smart Features:**
+- Intent detection & priority boost
+- Entity extraction (@mentions, CamelCase)
+- 5-phase auto-linking
+- Thread context chains
+- Health monitoring & decay
+- Emotional memory & learning
+- Proactive suggestions
 
 **Examples:**
 \`\`\`json
 { "op": "remember", "userId": "u1", "sessionId": "s1", "userMessage": "Q?", "agentMessage": "A!" }
 { "op": "recall", "userId": "u1", "query": "deadline" }
-{ "op": "all", "userId": "u1" }
+{ "op": "mood", "userId": "u1", "mood": "happy", "context": "Fixed a bug" }
+{ "op": "suggest", "userId": "u1" }
 \`\`\``,
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "thread", "health", "decay"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -187,6 +202,14 @@ export const memoryTool = {
             daysOld: { type: "number", description: "Delete memories older than N days" },
             importData: { type: "string", description: "JSON data to import" },
             includeShortTerm: { type: "boolean", description: "Include short-term in export" },
+            mood: { type: "string", description: "User mood (happy, sad, excited, frustrated, calm)" },
+            intensity: { type: "number", description: "Mood intensity 1-10" },
+            traits: { type: "object", description: "Personality traits" },
+            style: { type: "string", description: "Communication style" },
+            type: { type: "string", description: "Learning/type pattern type" },
+            pattern: { type: "string", description: "Pattern to learn" },
+            reminderType: { type: "string", description: "Type of reminder" },
+            title: { type: "string", description: "Reminder title" },
         },
         required: ["op", "userId"],
     },
@@ -1114,6 +1137,343 @@ export const memoryTool = {
                         message: decayed > 0 
                             ? `Decayed ${decayed} unused memories, boosted ${boosted} frequently accessed ones`
                             : "Memory is well maintained - no decay needed"
+                    }) }] };
+                }
+                
+                // =============================================
+                // PERSONA: User personality & preferences
+                // =============================================
+                case "persona": {
+                    const { traits, style } = args;
+                    
+                    // Get or create persona
+                    let persona = db.prepare(`SELECT * FROM UserPersona WHERE userId = ?`).get(userId) as any;
+                    
+                    if (!persona) {
+                        const id = `persona_${Date.now()}`;
+                        db.prepare(`
+                            INSERT INTO UserPersona (id, userId, traits, communicationStyle, createdAt)
+                            VALUES (?, ?, ?, ?, ?)
+                        `).run(id, userId, JSON.stringify({}), style || "friendly", new Date().toISOString());
+                        persona = { id, userId, traits: "{}", communicationStyle: style || "friendly" };
+                    }
+                    
+                    // Update if provided
+                    if (traits || style) {
+                        const updates: string[] = [];
+                        const values: any[] = [];
+                        
+                        if (traits) {
+                            const existingTraits = JSON.parse(persona.traits || "{}");
+                            const newTraits = { ...existingTraits, ...traits };
+                            updates.push("traits = ?");
+                            values.push(JSON.stringify(newTraits));
+                        }
+                        if (style) {
+                            updates.push("communicationStyle = ?");
+                            values.push(style);
+                        }
+                        updates.push("updatedAt = ?");
+                        values.push(new Date().toISOString());
+                        values.push(userId);
+                        
+                        db.prepare(`UPDATE UserPersona SET ${updates.join(", ")} WHERE userId = ?`).run(...values);
+                    }
+                    
+                    // Reload persona
+                    persona = db.prepare(`SELECT * FROM UserPersona WHERE userId = ?`).get(userId) as any;
+                    
+                    // Get recent mood
+                    const recentMood = db.prepare(`
+                        SELECT mood, createdAt FROM EmotionalMemory WHERE userId = ? 
+                        ORDER BY createdAt DESC LIMIT 1
+                    `).get(userId) as any;
+                    
+                    // Get learning stats
+                    const learningStats = db.prepare(`
+                        SELECT COUNT(*) as patterns, AVG(confidence) as avgConfidence 
+                        FROM LearningLog WHERE userId = ?
+                    `).get(userId) as any;
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        personality: {
+                            traits: JSON.parse(persona?.traits || "{}"),
+                            style: persona?.communicationStyle || "friendly",
+                            workStyle: persona?.workStyle || "collaborative"
+                        },
+                        currentMood: recentMood?.mood || "unknown",
+                        moodHistory: persona?.moodHistory ? JSON.parse(persona.moodHistory) : [],
+                        learningStats: {
+                            patternsLearned: learningStats?.patterns || 0,
+                            confidence: learningStats?.avgConfidence?.toFixed(2) || "0.50"
+                        },
+                        created: persona?.createdAt
+                    }) }] };
+                }
+                
+                // =============================================
+                // MOOD: Track emotional state
+                // =============================================
+                case "mood": {
+                    const { mood, intensity = 5, context } = args;
+                    if (!mood) return { content: [{ type: "text", text: "mood required" }], isError: true };
+                    
+                    const validMoods = ["happy", "sad", "excited", "frustrated", "calm", "anxious", "confused", "satisfied", "tired", "energized"];
+                    const normalizedMood = validMoods.includes(mood.toLowerCase()) ? mood.toLowerCase() : "neutral";
+                    
+                    // Record emotional memory
+                    const id = `emotion_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+                    db.prepare(`
+                        INSERT INTO EmotionalMemory (id, userId, mood, intensity, context, sessionId, createdAt)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    `).run(id, userId, normalizedMood, Math.min(10, Math.max(1, intensity)), context || "", sessionId || "", new Date().toISOString());
+                    
+                    // Update persona mood
+                    db.prepare(`UPDATE UserPersona SET lastMood = ?, updatedAt = ? WHERE userId = ?`)
+                        .run(normalizedMood, new Date().toISOString(), userId);
+                    
+                    // Detect triggers from recent high-intensity memories
+                    const triggers = db.prepare(`
+                        SELECT content FROM LongTermMemory 
+                        WHERE userId = ? AND intent IN ('error', 'success') 
+                        ORDER BY createdAt DESC LIMIT 3
+                    `).all(userId) as any[];
+                    
+                    // Learn from this mood
+                    const existingMood = db.prepare(`
+                        SELECT * FROM LearningLog WHERE userId = ? AND type = 'mood' AND pattern = ?
+                    `).get(userId, normalizedMood) as any;
+                    
+                    if (existingMood) {
+                        db.prepare(`
+                            UPDATE LearningLog SET usageCount = usageCount + 1, lastUsedAt = ? WHERE id = ?
+                        `).run(new Date().toISOString(), existingMood.id);
+                    } else {
+                        db.prepare(`
+                            INSERT INTO LearningLog (id, userId, type, pattern, confidence, createdAt)
+                            VALUES (?, ?, 'mood', ?, 0.5, ?)
+                        `).run(`learn_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, userId, normalizedMood, new Date().toISOString());
+                    }
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        recorded: true,
+                        mood: normalizedMood,
+                        intensity,
+                        triggers: triggers.map(t => t.content?.slice(0, 50)),
+                        suggestion: normalizedMood === "frustrated" ? "Take a break, you seem stressed" :
+                                   normalizedMood === "excited" ? "Great energy! Channel it into important tasks" :
+                                   normalizedMood === "sad" ? "Remember: tough times pass" :
+                                   "Keep going, you're doing great!"
+                    }) }] };
+                }
+                
+                // =============================================
+                // LEARN: Adaptive learning patterns
+                // =============================================
+                case "learn": {
+                    const { type, pattern, data } = args;
+                    
+                    // Learn a pattern
+                    if (type && pattern) {
+                        const id = `learn_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+                        db.prepare(`
+                            INSERT INTO LearningLog (id, userId, type, pattern, data, confidence, createdAt)
+                            VALUES (?, ?, ?, ?, ?, 0.5, ?)
+                        `).run(id, userId, type, pattern, JSON.stringify(data || {}), new Date().toISOString());
+                    }
+                    
+                    // Get all learning patterns
+                    const patterns = db.prepare(`
+                        SELECT * FROM LearningLog WHERE userId = ? ORDER BY usageCount DESC, confidence DESC
+                    `).all(userId) as any[];
+                    
+                    // Group by type
+                    const byType: Record<string, any[]> = {};
+                    patterns.forEach((p: any) => {
+                        if (!byType[p.type]) byType[p.type] = [];
+                        byType[p.type].push({
+                            pattern: p.pattern,
+                            confidence: p.confidence,
+                            usageCount: p.usageCount,
+                            lastUsed: p.lastUsedAt
+                        });
+                    });
+                    
+                    // Update confidence based on usage
+                    patterns.forEach((p: any) => {
+                        const newConf = Math.min(1, 0.3 + (p.usageCount * 0.1));
+                        db.prepare(`UPDATE LearningLog SET confidence = ? WHERE id = ?`).run(newConf, p.id);
+                    });
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        totalPatterns: patterns.length,
+                        byCategory: byType,
+                        topPatterns: patterns.slice(0, 5).map((p: any) => ({
+                            type: p.type,
+                            pattern: p.pattern,
+                            confidence: p.confidence.toFixed(2)
+                        })),
+                        learningTip: patterns.length > 10 ? 
+                            "You're building a rich understanding of patterns!" :
+                            "Keep interacting - I'll learn your patterns over time"
+                    }) }] };
+                }
+                
+                // =============================================
+                // REMIND: Proactive memory reminders
+                // =============================================
+                case "remind": {
+                    const { reminderType, title, description, memoryId, priority = 5 } = args;
+                    
+                    // Get pending reminders
+                    if (!reminderType && !title) {
+                        const pending = db.prepare(`
+                            SELECT * FROM MemoryReminders 
+                            WHERE userId = ? AND status = 'pending' 
+                            AND (snoozedUntil IS NULL OR snoozedUntil < ?)
+                            ORDER BY priority DESC, createdAt DESC
+                            LIMIT 10
+                        `).all(userId, new Date().toISOString()) as any[];
+                        
+                        return { content: [{ type: "text", text: JSON.stringify({
+                            count: pending.length,
+                            reminders: pending.map((r: any) => ({
+                                id: r.id,
+                                type: r.reminderType,
+                                title: r.title,
+                                description: r.description,
+                                priority: r.priority,
+                                created: r.createdAt
+                            }))
+                        }) }] };
+                    }
+                    
+                    // Create reminder
+                    if (reminderType && title) {
+                        const id = `remind_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+                        db.prepare(`
+                            INSERT INTO MemoryReminders (id, userId, memoryId, reminderType, title, description, priority, createdAt)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        `).run(id, userId, memoryId || "", reminderType, title, description || "", priority, new Date().toISOString());
+                        
+                        return { content: [{ type: "text", text: JSON.stringify({
+                            created: true,
+                            id,
+                            reminderType,
+                            title
+                        }) }] };
+                    }
+                    
+                    // Snooze or complete
+                    if (args.memoryId && args.mood) {
+                        const action = args.mood;
+                        if (action === "snooze") {
+                            const snoozeUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+                            db.prepare(`UPDATE MemoryReminders SET snoozedUntil = ? WHERE id = ?`).run(snoozeUntil, args.memoryId);
+                            return { content: [{ type: "text", text: JSON.stringify({ snoozed: true, until: snoozeUntil }) }] };
+                        }
+                        if (action === "done") {
+                            db.prepare(`UPDATE MemoryReminders SET status = 'completed', completedAt = ? WHERE id = ?`)
+                                .run(new Date().toISOString(), args.memoryId);
+                            return { content: [{ type: "text", text: JSON.stringify({ completed: true }) }] };
+                        }
+                    }
+                    
+                    return { content: [{ type: "text", text: "Use remind without args to get pending, or with reminderType+title to create" }] };
+                }
+                
+                // =============================================
+                // SUGGEST: Proactive suggestions based on patterns
+                // =============================================
+                case "suggest": {
+                    // Get recent mood
+                    const recentMood = db.prepare(`
+                        SELECT mood, intensity, context FROM EmotionalMemory 
+                        WHERE userId = ? ORDER BY createdAt DESC LIMIT 1
+                    `).get(userId) as any;
+                    
+                    // Get high-priority unaccessed memories
+                    const highPriority = db.prepare(`
+                        SELECT id, content, intent FROM LongTermMemory 
+                        WHERE userId = ? AND priority >= 0.7 AND accessCount < 2
+                        ORDER BY priority DESC LIMIT 3
+                    `).all(userId) as any[];
+                    
+                    // Get learning patterns for suggestions
+                    const patterns = db.prepare(`
+                        SELECT pattern, confidence FROM LearningLog 
+                        WHERE userId = ? ORDER BY confidence DESC LIMIT 5
+                    `).all(userId) as any[];
+                    
+                    // Get pending reminders
+                    const pendingReminders = db.prepare(`
+                        SELECT COUNT(*) as c FROM MemoryReminders 
+                        WHERE userId = ? AND status = 'pending'
+                    `).get(userId) as any;
+                    
+                    // Get error memories that need follow-up
+                    const unresolvedErrors = db.prepare(`
+                        SELECT id, content FROM LongTermMemory 
+                        WHERE userId = ? AND intent = 'error' AND accessCount < 3
+                        ORDER BY createdAt DESC LIMIT 2
+                    `).all(userId) as any[];
+                    
+                    // Build suggestions
+                    const suggestions: { type: string; text: string; priority: number }[] = [];
+                    
+                    // Mood-based
+                    if (recentMood?.mood === "frustrated" && recentMood?.intensity > 7) {
+                        suggestions.push({ type: "care", text: "You seem stressed. Remember to take breaks!", priority: 10 });
+                    }
+                    if (recentMood?.mood === "excited") {
+                        suggestions.push({ type: "energy", text: "Great energy! Perfect time for tackling difficult tasks.", priority: 8 });
+                    }
+                    
+                    // Reminder-based
+                    if (pendingReminders?.c > 0) {
+                        suggestions.push({ type: "reminder", text: `You have ${pendingReminders.c} pending reminder(s)`, priority: 7 });
+                    }
+                    
+                    // Error follow-up
+                    if (unresolvedErrors.length > 0) {
+                        suggestions.push({ type: "followup", text: "You have unresolved errors - want to check on them?", priority: 9 });
+                    }
+                    
+                    // Learning suggestions
+                    patterns.forEach((p: any) => {
+                        if (p.confidence > 0.7) {
+                            suggestions.push({ type: "learned", text: `I notice you often ${p.pattern} - keep it up!`, priority: 5 });
+                        }
+                    });
+                    
+                    // High priority memories
+                    if (highPriority.length > 0) {
+                        suggestions.push({ type: "memory", text: `You have ${highPriority.length} important memory(ies) to revisit`, priority: 6 });
+                    }
+                    
+                    // Generic
+                    if (suggestions.length === 0) {
+                        const timeOfDay = new Date().getHours();
+                        if (timeOfDay < 12) {
+                            suggestions.push({ type: "morning", text: "Good morning! Ready to make progress today?", priority: 3 });
+                        } else if (timeOfDay < 18) {
+                            suggestions.push({ type: "afternoon", text: "Afternoon check-in: How's it going?", priority: 3 });
+                        } else {
+                            suggestions.push({ type: "evening", text: "Wrapping up for today? Any loose ends?", priority: 3 });
+                        }
+                    }
+                    
+                    // Sort by priority
+                    suggestions.sort((a, b) => b.priority - a.priority);
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        currentMood: recentMood?.mood || "unknown",
+                        suggestions: suggestions.slice(0, 5),
+                        stats: {
+                            pendingReminders: pendingReminders?.c || 0,
+                            patternsLearned: patterns.length,
+                            highPriorityMemories: highPriority.length
+                        }
                     }) }] };
                 }
                 
