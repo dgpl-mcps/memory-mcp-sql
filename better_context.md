@@ -11,6 +11,24 @@ This document provides guidance on which memory functions to use for optimal con
 | `DEFAULT_SEARCH_LIMIT` | 10 | Number of results to return |
 | `DEFAULT_SEARCH_OFFSET` | 0 | Pagination offset |
 | `DEFAULT_CONFIDENCE_THRESHOLD` | 20 | Minimum confidence score (0-100) |
+| `ENABLE_DEFER_LOADING` | true | Load all tools on startup (set false in .env for all tools) |
+
+---
+
+## Migration from Obsidian Vault
+
+To migrate from an Obsidian vault SQLite database:
+
+```bash
+# Run migration (will use MCP tools automatically)
+node build/migrate_from_vault.js
+```
+
+The migration script:
+1. Reads chunks from `main.sqlite`
+2. Uses `extract_entities` to extract persons, bots, organizations
+3. Uses `add_timeline_entry` to store content
+4. Creates topics based on path structure
 
 ---
 
