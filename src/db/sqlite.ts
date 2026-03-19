@@ -456,6 +456,20 @@ export const initSqlite = () => {
         CREATE INDEX IF NOT EXISTS idx_reminders_user ON Reminders(userId);
         CREATE INDEX IF NOT EXISTS idx_reminders_time ON Reminders(remindAt);
 
+        -- Memory Links (for cross-session relationships)
+        CREATE TABLE IF NOT EXISTS MemoryLinks (
+            id TEXT PRIMARY KEY,
+            memoryId1 TEXT NOT NULL,
+            memoryId2 TEXT NOT NULL,
+            relationship TEXT DEFAULT 'related',
+            strength REAL DEFAULT 0.5,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (memoryId1) REFERENCES LongTermMemory(id) ON DELETE CASCADE,
+            FOREIGN KEY (memoryId2) REFERENCES LongTermMemory(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_links_1 ON MemoryLinks(memoryId1);
+        CREATE INDEX IF NOT EXISTS idx_memory_links_2 ON MemoryLinks(memoryId2);
+
         -- Session Summary (1 summary per N chats)
         CREATE TABLE IF NOT EXISTS SessionSummary (
             id TEXT PRIMARY KEY,
@@ -1094,11 +1108,12 @@ export const findRelatedContent = async (refTable: string, refId: string, limit:
 };
 
 // Graph Operations
-export const createEntity = (userId: string, projectId: string, entityType: string, name: string, properties: any = {}) => {
+export const createEntity = (userId: string, projectId: string, entityType: string, name: string, properties: any = {}, ownerId?: string) => {
     const id = `entity_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    db.prepare(`INSERT INTO Entities (id, userId, projectId, entityType, name, properties) VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(id, userId, projectId, entityType, name, ensureJson(properties));
-    return { id, userId, projectId, entityType, name, properties, createdAt: new Date().toISOString() };
+    const owner = ownerId || userId;
+    db.prepare(`INSERT INTO Entities (id, userId, projectId, entityType, name, properties, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, entityType, name, ensureJson(properties), owner);
+    return { id, userId, projectId, entityType, name, properties, ownerId: owner, createdAt: new Date().toISOString() };
 };
 
 export const updateEntity = (id: string, updates: { name?: string; properties?: any }) => {

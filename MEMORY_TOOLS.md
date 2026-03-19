@@ -1,129 +1,270 @@
-# Memory MCP Server - Tool Reference
+# Memory MCP Server - Consolidated Tool Reference
 
-A robust memory management system for AI agents with typed knowledge graph, self-improvement capabilities, and smart conversation memory.
+> **116 tools → 9 tools** via `op` parameter
 
-## Core Memory Tools (30 tools)
+## Available Tools (9)
 
-| # | Tool Name | Description |
-|---|-----------|-------------|
-| 1 | `memory_remember` | Store a conversation. Auto-summarizes after N chats. |
-| 2 | `memory_recall` | Find relevant memories. Searches short-term, long-term, and cross-session with query expansion. |
-| 3 | `memory_history` | Get recent conversation history with flow analysis. |
-| 4 | `memory_context` | Get token-optimized context for LLM. |
-| 5 | `memory_boost` | Boost or reduce memory importance. |
-| 6 | `memory_pin` | Pin/unpin a memory to preserve it. |
-| 7 | `memory_stats` | Get memory system statistics. |
-| 8 | `memory_cleanup` | Clean up old memories (pinned preserved). |
-| 9 | `memory_inspect` | View full memory details. |
-| 10 | `memory_batch` | Store multiple conversations at once. |
-| 11 | `memory_insights` | Extract key learnings, patterns from memory. |
-| 12 | `memory_trim` | Smart context trimming - preserves important parts when reducing size. |
-| 13 | `memory_analytics` | Session-level analytics: topics, time spent, questions vs commands ratio. |
-| 14 | `memory_export` | Export memories to JSON. |
-| 15 | `memory_import` | Import memories from JSON export. |
-| 16 | `memory_link` | Link two memories as related/follows/supersedes/references. |
-| 17 | `memory_set_ttl` | Set time-to-live (expiration) on memories. |
-| 18 | `memory_search_by_date` | Search memories within date range. |
-| 19 | `memory_tag` | Add or remove tags on memories. |
-| 20 | `memory_search_by_tag` | Find memories by specific tag. |
-| 21 | `memory_fuzzy_recall` | Fuzzy search with typo tolerance (Levenshtein distance). |
-| 22 | `memory_vote` | Like/dislike a memory to rate quality. |
-| 23 | `memory_quality` | Get or calculate memory quality score. |
-| 24 | `memory_best` | Get high quality memories above threshold. |
-| 25 | `memory_bulk` | Bulk operations: pin, unpin, add_tags, delete, boost. |
-| 26 | `memory_archive` | Archive or unarchive memories. |
-| 27 | `memory_archived` | List archived memories. |
-| 28 | `memory_remind` | Set a reminder to revisit a memory. |
-| 29 | `memory_reminders` | List pending or upcoming reminders. |
-| 30 | `memory_merge` | Merge two memories into one. |
+| # | Tool | Operations | Description |
+|---|------|------------|-------------|
+| 1 | `memory` | 15 ops | Store, search, manage memories |
+| 2 | `entity` | 5 ops | Knowledge graph entities |
+| 3 | `relation` | 3 ops | Entity relationships |
+| 4 | `short_term` | 6 ops | Fast KV storage |
+| 5 | `project` | 14 ops | Projects, tasks, workflows |
+| 6 | `session` | 8 ops | Sessions and timelines |
+| 7 | `context` | 5 ops | Conversation context |
+| 8 | `extract` | 9 ops | Extract/remember info |
+| 9 | `share` | 5 ops | Share with others |
 
-## Additional Tools
+---
 
-| Tool Name | Description |
-|-----------|-------------|
-| `global_memory_search` | Search across all memory types (entities, relations, documents). |
-| `create_memory_snapshot` | Create backup of entire SQLite graph. |
-| `diagnose_memory_health` | Get real-time operational status (RAM, DB connectivity). |
-| `[prefix]_tool_search` | Search for available tools by keyword. |
+## Tool Details
 
-## Key Features
+### 1. memory (15 operations)
 
-### Smart Memory System
-- **Short-term memory**: 20% threshold for recent conversations
-- **Long-term memory**: 75% similarity threshold for permanent storage
-- **Auto-summarization**: At N+1 chats (configurable, default 20)
-- **Auto-linking**: Automatically links related entities when storing
+| Op | Description |
+|----|-------------|
+| remember | Store conversation |
+| recall | Search memories |
+| history | Get conversation history |
+| context | LLM-optimized context |
+| stats | Memory statistics |
+| cleanup | Delete old memories |
+| boost | Adjust priority |
+| pin | Pin/unpin memory |
+| inspect | View memory details |
+| export | Export to JSON |
+| import | Import from JSON |
+| insights | Extract patterns |
+| trim | Smart trimming |
+| analytics | Session analytics |
+| link | Link memories |
 
-### Intelligence Features
-- **Intent detection**: Questions, commands, errors, success, learning, planning
-- **Entity extraction**: CamelCase names, #tags, URLs, emails, file paths
-- **Query expansion**: Synonyms for better recall (e.g., "fix" → "bug", "error")
-- **Fuzzy search**: Levenshtein distance for typo tolerance
-- **Quality scoring**: Auto-calculated based on completeness, keywords, priority
+**Example:**
+```json
+{ "op": "remember", "userId": "u1", "userMessage": "Q?", "agentMessage": "A!" }
+{ "op": "recall", "userId": "u1", "query": "deadline" }
+{ "op": "stats", "userId": "u1" }
+```
 
-### Memory Management
-- **Priority scoring**: With time decay (default 30 days)
-- **Memory pinning**: Preserve important memories
-- **TTL/Expiration**: Set auto-expiry on memories
-- **Archive**: Hide from recall but preserve
-- **Tags**: Organize with custom tags
-- **Bulk operations**: Pin, tag, delete multiple at once
-- **Voting**: Like/dislike to rate quality
+---
 
-### Data Operations
-- **Export/Import**: JSON format for backup/transfer
-- **Merge**: Combine duplicate memories
-- **Link**: Create relationships between memories
-- **Reminders**: Schedule follow-up notifications
+### 2. entity (5 operations)
+
+**Entity Types:** Person, Bot, Organization, Task, Rule, CoreRule, LongTermGoal, Epic, Todo, Insight, Walkthrough
+
+| Op | Description |
+|----|-------------|
+| create | Create entity |
+| read | Get by ID |
+| update | Update name/properties |
+| delete | Delete entity |
+| search | Find by type/name |
+
+**Example:**
+```json
+{ "op": "create", "userId": "u1", "entityType": "Person", "name": "Priya", "properties": {"role": "Lead"} }
+{ "op": "search", "userId": "u1", "entityType": "Person", "search": "priya" }
+```
+
+---
+
+### 3. relation (3 operations)
+
+**Relation Types:** DEPENDS_ON, SUBTASK_OF, FOLLOWS, GOVERNED_BY, PART_OF, WORKS_WITH, KNOWS, TOLD, CONTACTS, BELONGS_TO, MANAGED_BY, OWNS, DEADLINE_FOR
+
+| Op | Description |
+|----|-------------|
+| create | Create relation |
+| delete | Delete relation |
+| search | Find relations |
+
+**Example:**
+```json
+{ "op": "create", "userId": "u1", "fromId": "e1", "toId": "e2", "type": "DEPENDS_ON" }
+```
+
+---
+
+### 4. short_term (6 operations)
+
+| Op | Description |
+|----|-------------|
+| set | Store key-value |
+| get | Get by key |
+| list | List all keys |
+| delete | Delete key |
+| clear | Clear all |
+| search | Search values |
+
+**Example:**
+```json
+{ "op": "set", "userId": "u1", "key": "active_task", "value": {"id": "t1"} }
+{ "op": "get", "userId": "u1", "key": "active_task" }
+```
+
+---
+
+### 5. project (14 operations)
+
+**Project Operations:**
+| Op | Description |
+|----|-------------|
+| create_project | Create project |
+| get_project | Get by ID |
+| list_projects | List all |
+| delete_project | Delete project |
+
+**Task Operations:**
+| Op | Description |
+|----|-------------|
+| plan_task | Create task |
+| get_task | Get by ID |
+| list_tasks | List tasks |
+| update_task | Update status |
+| complete_task | Mark done |
+| delete_task | Remove task |
+
+**Workflow Operations:**
+| Op | Description |
+|----|-------------|
+| plan_workflow | Create workflow |
+| get_workflow | Get by ID |
+| list_workflows | List workflows |
+
+**Example:**
+```json
+{ "op": "create_project", "userId": "u1", "name": "My App" }
+{ "op": "plan_task", "userId": "u1", "projectId": "p1", "title": "Fix bug", "status": "pending" }
+{ "op": "complete_task", "id": "task_123" }
+```
+
+---
+
+### 6. session (8 operations)
+
+| Op | Description |
+|----|-------------|
+| create | Create session |
+| get | Get by ID |
+| list | List sessions |
+| end | End session |
+| switch | Switch topic |
+| merge | Merge sessions |
+| timeline | Get timeline |
+| cross | Cross-session memories |
+
+**Example:**
+```json
+{ "op": "create", "userId": "u1", "type": "persistent", "title": "Morning chat" }
+{ "op": "timeline", "userId": "u1", "granularity": "day" }
+```
+
+---
+
+### 7. context (5 operations)
+
+| Op | Description |
+|----|-------------|
+| better | All-in-one context |
+| chat_add | Add chat message |
+| chat_get | Get chat history |
+| chat_summary | Store summary |
+| get_summary | Get summaries |
+
+**Example:**
+```json
+{ "op": "better", "userId": "u1", "timeRange": "week" }
+{ "op": "chat_add", "userId": "u1", "role": "user", "content": "Hello" }
+```
+
+---
+
+### 8. extract (9 operations)
+
+| Op | Description |
+|----|-------------|
+| entities | Extract from text |
+| text | Remember general |
+| keypoint | Remember highlight |
+| thought | Add thought |
+| note | General note |
+| discovery | New discovery |
+| mistake | Remember mistake |
+| learning | Lesson learned |
+| boundary | Scope boundary |
+
+**Example:**
+```json
+{ "op": "entities", "userId": "u1", "text": "John from Acme called", "autoStore": true }
+{ "op": "learning", "userId": "u1", "insight": "Tests first" }
+```
+
+---
+
+### 9. share (5 operations)
+
+| Op | Description |
+|----|-------------|
+| share | Share memory |
+| shared_with_me | View shared with you |
+| shared_by_me | View shared by you |
+| get_network | Get relation network |
+| person_memories | Get person's memories |
+
+**Example:**
+```json
+{ "op": "share", "userId": "u1", "toOwnerId": "u2", "content": "Deadline Sunday" }
+{ "op": "shared_with_me", "userId": "u1" }
+```
+
+---
+
+## Common Patterns
+
+### Store & Recall
+```
+1. memory remember
+2. memory recall
+3. entity search
+```
+
+### Project Management
+```
+1. project create_project
+2. project plan_task
+3. project complete_task
+```
+
+### Context Building
+```
+1. context better
+2. extract entities
+3. entity create
+```
+
+---
 
 ## Configuration
 
-Environment variables (optional, defaults provided):
-
-```
-MAX_SHORT_TERM_CHATS=10
-SHORT_TERM_THRESHOLD=20
-LONG_TERM_THRESHOLD=75
-AUTO_SUMMARIZE_AFTER_CHATS=20
-SUMMARY_MAX_LENGTH=500
-PRIORITY_DECAY_DAYS=30
-CROSS_SESSION_THRESHOLD=60
+```env
 TOOL_PREFIX=memory
+ENABLE_DEFER_LOADING=false
+
+DEFAULT_SEARCH_LIMIT=10
+DEFAULT_CONFIDENCE_THRESHOLD=20
+
+SHORT_TERM_THRESHOLD=20%    # Below → short-term
+LONG_TERM_THRESHOLD=75%     # Above → long-term
 ```
 
-## Quick Start
+---
 
-```bash
-# Install dependencies
-npm install
+## Error Handling
 
-# Build
-npm run build
-
-# Run
-npm start
-# or dev mode
-npm run dev
-```
-
-## Tool Usage Examples
-
-```json
-// Store conversation
-{ "name": "memory_remember", "arguments": { "userId": "user1", "sessionId": "sess1", "userMessage": "How do I fix the login bug?", "agentMessage": "Check the auth middleware..." } }
-
-// Recall memories
-{ "name": "memory_recall", "arguments": { "userId": "user1", "query": "login bug" } }
-
-// Set TTL (30 days)
-{ "name": "memory_set_ttl", "arguments": { "memoryId": "ltm_xxx", "daysToLive": 30 } }
-
-// Tag memory
-{ "name": "memory_tag", "arguments": { "memoryId": "ltm_xxx", "tags": ["important", "auth"], "action": "add" } }
-
-// Export
-{ "name": "memory_export", "arguments": { "userId": "user1" } }
-
-// Vote
-{ "name": "memory_vote", "arguments": { "memoryId": "ltm_xxx", "vote": "like" } }
-```
+| Error | Cause | Solution |
+|-------|-------|----------|
+| "id required" | Missing ID | Add `id` param |
+| "sessionId required" | Missing sessionId | Add `sessionId` |
+| "entityType and name required" | Missing params | Add both |
+| "Unknown op" | Invalid operation | Check tool docs |

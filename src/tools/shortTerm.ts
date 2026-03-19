@@ -2,9 +2,52 @@ import { setShortTermMemory, getShortTermMemory, deleteShortTermMemory, clearSes
 import { getMemoryConfig } from "../utils/env.js";
 
 export const shortTermTools = [
+    // =============================================
+    // SHORT-TERM MEMORY (Session-based KV Store)
+    // =============================================
+    // Use for: Fast access, session state, scratch pad
+    // Auto-expires: Based on SHORT_TERM_THRESHOLD config
+    // Unlike LongTerm: Uses exact key lookup, not semantic search
+    // =============================================
     {
         name: "set_short_term_memory",
-        description: "Save arbitrary fast-access key-value pair for the current session (e.g active_task, scratch_pad).",
+        description: `## Set Short-Term Memory (Key-Value)
+
+**Purpose:** Store fast-access key-value data for current session/project.
+
+**Use Cases:**
+- Storing active task context
+- Scratch pad for calculations
+- Caching intermediate results
+- Session-specific state
+
+**Storage:** JSON-serializable values. Key uniqueness: userId + projectId + key.
+
+**Tool Chaining:**
+- After: Often followed by get_short_term_memory
+- Use: list_short_term_memory to see all keys
+
+**Keywords:** set, save, store, cache, session, key-value, scratch, temporary
+
+**Example - Store Active Task:**
+\`\`\`json
+{
+  "userId": "dev",
+  "projectId": "myapp",
+  "key": "active_task",
+  "value": {"id": "task_123", "name": "Fix login bug", "status": "in_progress"}
+}
+\`\`\`
+
+**Example - Scratch Pad:**
+\`\`\`json
+{
+  "userId": "dev",
+  "projectId": "myapp",
+  "key": "scratch_pad",
+  "value": {"calculation": "55 * 12 = 660", "note": "for report section 3"}
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -29,7 +72,25 @@ export const shortTermTools = [
     },
     {
         name: "get_short_term_memory",
-        description: "Retrieve a fast-access key-value pair for the current session.",
+        description: `## Get Short-Term Memory Value
+
+**Purpose:** Retrieve a specific value by key from session storage.
+
+**Use Cases:**
+- Fetching cached session state
+- Getting active task context
+- Retrieving scratch pad calculations
+
+**Keywords:** get, retrieve, fetch, read, session, key-value
+
+**Example:**
+\`\`\`json
+{
+  "userId": "dev",
+  "projectId": "myapp",
+  "key": "active_task"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -56,7 +117,29 @@ export const shortTermTools = [
     },
     {
         name: "search_short_term_memory",
-        description: "Search local SQLite memory using embeddings/semantic search, matching the intent. If embedding url is disabled, it will fallback to standard text search.",
+        description: `## Search Short-Term Memory (Semantic)
+
+**Purpose:** Search short-term memories using embeddings/semantic similarity.
+
+**Use Cases:**
+- Finding related session memories
+- Semantic search across session data
+- Fallback to text search if embeddings disabled
+
+**Returns:** Memories with confidence scores based on semantic similarity.
+
+**Keywords:** search, find, semantic, similarity, embeddings, recall, short-term
+
+**Example:**
+\`\`\`json
+{
+  "userId": "dev",
+  "projectId": "myapp",
+  "query": "login bug fix",
+  "confidenceThreshold": 20,
+  "limit": 10
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -91,7 +174,25 @@ export const shortTermTools = [
     },
     {
         name: "list_short_term_memory",
-        description: "List all keys and values in short-term memory for the current session.",
+        description: `## List All Short-Term Memory Keys
+
+**Purpose:** Get all keys and values stored for a session.
+
+**Use Cases:**
+- Seeing all cached session data
+- Debugging session state
+- Overview of temporary storage
+
+**Keywords:** list, keys, all, session, overview, keys
+
+**Example:**
+\`\`\`json
+{
+  "userId": "dev",
+  "projectId": "myapp",
+  "limit": 20
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -123,7 +224,25 @@ export const shortTermTools = [
     },
     {
         name: "delete_short_term_memory",
-        description: "Deletes a specific short-term memory key.",
+        description: `## Delete Short-Term Memory Key
+
+**Purpose:** Remove a specific key from short-term storage.
+
+**Use Cases:**
+- Clearing outdated cache
+- Removing temporary data
+- Resetting session state
+
+**Keywords:** delete, remove, clear, key, forget
+
+**Example:**
+\`\`\`json
+{
+  "userId": "dev",
+  "projectId": "myapp",
+  "key": "old_cache"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -147,7 +266,26 @@ export const shortTermTools = [
     },
     {
         name: "clear_session",
-        description: "Clears ALL short term memory for a specific User and Project.",
+        description: `## Clear All Short-Term Memory for Session
+
+**Purpose:** Wipe all temporary session data for user+project.
+
+**Use Cases:**
+- Starting fresh session
+- Clearing all cached data
+- Reset before new task
+
+**Warning:** This deletes ALL short-term data for the user+project combination.
+
+**Keywords:** clear, reset, wipe, delete, all, session, fresh
+
+**Example:**
+\`\`\`json
+{
+  "userId": "dev",
+  "projectId": "myapp"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {

@@ -3,9 +3,41 @@ import { getShortTermMemory, setShortTermMemory } from "../db/sqlite.js";
 const DEFAULT_CHAT_LIMIT = parseInt(process.env.CHAT_CONTEXT_LIMIT || '10', 10);
 
 export const contextTools = [
+    // =============================================
+    // CHAT CONTEXT & SUMMARIZATION
+    // =============================================
+    // Use for: Managing conversation history, summaries
+    // Auto-trigger: Warns when history exceeds context limit
+    // Storage: ShortTermMemory with 'chat_history' and 'chat_summary' keys
+    // =============================================
     {
         name: "add_chat_message",
-        description: "Save a chat message to the current session's context history. Returns a warning if the chat history exceeds the context limit, prompting the agent to summarize.",
+        description: `## Add Chat Message to Context
+
+**Purpose:** Save a chat message to session's conversation history.
+
+**Use Cases:**
+- Storing user-agent conversation turns
+- Building conversation context
+- Tracking discussion topics
+
+**Auto-Summary:** When history reaches limit (default 10), returns WARNING to summarize.
+
+**Tool Chaining:**
+- After: Often followed by store_context_summary
+- Use: get_chat_history to review history
+
+**Keywords:** add, save, store, chat, message, conversation, history
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "projectId": "myproject",
+  "role": "user",
+  "content": "Please help me fix the login bug"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -50,7 +82,24 @@ export const contextTools = [
     },
     {
         name: "get_chat_history",
-        description: "Retrieve the current raw chat history that hasn't been summarized yet.",
+        description: `## Get Chat History
+
+**Purpose:** Retrieve raw chat history that hasn't been summarized.
+
+**Use Cases:**
+- Reviewing recent conversation
+- Getting context before responding
+- Checking what was discussed
+
+**Keywords:** history, chat, messages, conversation, review, past
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "projectId": "myproject"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -74,7 +123,27 @@ export const contextTools = [
     },
     {
         name: "store_context_summary",
-        description: "Save a generated summary of the recent chat. This automatically clears the recent chat history to free up context window.",
+        description: `## Store Context Summary
+
+**Purpose:** Save condensed summary and clear chat history.
+
+**Use Cases:**
+- Freeing up context window
+- Condensing long conversations
+- Saving key takeaways
+
+**Note:** Automatically clears chat history after storing summary.
+
+**Keywords:** summarize, condense, summary, compress, key points
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "projectId": "myproject",
+  "summary": "Discussed login bug - root cause is expired token. Fix needed in auth middleware."
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -110,7 +179,24 @@ export const contextTools = [
     },
     {
         name: "get_context_summary",
-        description: "Retrieve the stored condensed summary of the conversation.",
+        description: `## Get Context Summary
+
+**Purpose:** Retrieve stored condensed conversation summary.
+
+**Use Cases:**
+- Getting condensed context
+- Reviewing key takeaways
+- Refreshing memory before new conversation
+
+**Keywords:** summary, condensed, overview, key points
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "projectId": "myproject"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {

@@ -308,10 +308,49 @@ function levenshtein(a: string, b: string): number {
 // =============================================
 
 export const memoryTools = [
+    // =============================================
+    // CORE MEMORY TOOLS
+    // =============================================
+    // Memory Flow: remember → recall → context
+    // Auto-features: summarization, deduplication, linking
+    // Storage: ShortTermChat → LongTermMemory (after N chats)
+    // =============================================
+    
     // 1. remember - store conversation
     {
         name: "memory_remember",
-        description: "Store a conversation. Auto-summarizes and auto-summarizes after N chats.",
+        description: `## Store Conversation (Remember)
+
+**Purpose:** Save a conversation turn (user message + agent response) to memory.
+
+**Auto-Features:**
+- Extracts entities, tasks, keypoints from message
+- Links to knowledge graph entities
+- Auto-deduplicates every 10th chat
+- Auto-summarizes after N chats (config: AUTO_SUMMARIZE_AFTER_CHATS)
+- Moves to long-term memory after summarization
+
+**Use Cases:**
+- Storing important conversations
+- Capturing decisions and answers
+- Saving user requests and responses
+
+**Tool Chaining:**
+- After: Often followed by memory_recall to verify
+- Can chain: memory_context for optimized prompt
+
+**Keywords:** remember, store, save, conversation, chat, message, note
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "sessionId": "morning-chat-001",
+  "userMessage": "What did we discuss about the API deadline?",
+  "agentMessage": "We agreed on Friday March 21st for the API delivery.",
+  "progress": "API milestone set"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -391,7 +430,38 @@ export const memoryTools = [
     // 2. recall - find relevant memories
     {
         name: "memory_recall",
-        description: "Find relevant memories. Searches short-term first, then long-term, then cross-session.",
+        description: `## Search Memories (Recall)
+
+**Purpose:** Find relevant memories across all memory sources using semantic search.
+
+**Search Order:**
+1. **Short-term memory** - Recent conversations (threshold: 20%)
+2. **Long-term memory** - Summarized memories (threshold: 75%)
+3. **Cross-session** - Related sessions (if scope=all)
+
+**Query Expansion:** Automatically expands queries (e.g., "fix" → "fix bug error issue problem")
+
+**Use Cases:**
+- Finding information from past conversations
+- Answering "what did we discuss about X?"
+- Recalling decisions or agreements
+
+**Tool Chaining:**
+- Often followed by: memory_inspect for full details
+- Can chain: memory_context for LLM-optimized context
+
+**Keywords:** recall, remember, find, search, query, memory, past, previous, discussed
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "query": "API deadline",
+  "scope": "all",
+  "limit": 10,
+  "confidenceThreshold": 20
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -458,7 +528,31 @@ export const memoryTools = [
     // 3. history - get conversation history
     {
         name: "memory_history",
-        description: "Get recent conversation history.",
+        description: `## Get Conversation History
+
+**Purpose:** Retrieve raw conversation history for a session with flow analysis.
+
+**Returns:**
+- Chat count and summaries count
+- Flow analysis (question, command, debugging, learning, progress)
+- Complexity score
+- Recent messages preview
+
+**Use Cases:**
+- Reviewing what was discussed
+- Getting context before answering
+- Understanding conversation structure
+
+**Keywords:** history, conversation, past, messages, session, review, earlier
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "sessionId": "morning-chat-001",
+  "limit": 10
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -500,7 +594,30 @@ export const memoryTools = [
     // 4. context - get optimized LLM context
     {
         name: "memory_context",
-        description: "Get token-optimized context for LLM.",
+        description: `## Get LLM-Optimized Context
+
+**Purpose:** Get token-optimized context ready for LLM consumption.
+
+**Features:**
+- Smart truncation preserving important parts
+- Combines summaries + recent chats
+- Token-limited output (default 6000)
+
+**Use Cases:**
+- Before generating LLM response
+- Context for new conversation turn
+- Summarizing session for context
+
+**Keywords:** context, prompt, LLM, token, optimize, ready, prepare
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "sessionId": "morning-chat-001",
+  "maxTokens": 6000
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -538,7 +655,26 @@ export const memoryTools = [
     // 5. boost - adjust memory importance
     {
         name: "memory_boost",
-        description: "Boost or reduce memory importance.",
+        description: `## Boost Memory Importance
+
+**Purpose:** Adjust memory priority up or down to influence recall.
+
+**Delta Range:** -0.3 to +0.3 (default: +0.1)
+
+**Use Cases:**
+- Marking important decisions as high priority
+- Demoting less relevant memories
+- Influencing which memories get recalled first
+
+**Keywords:** boost, priority, importance, weight, enhance
+
+**Example:**
+\`\`\`json
+{
+  "memoryId": "mem_abc123",
+  "delta": 0.2
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -563,7 +699,29 @@ export const memoryTools = [
     // 6. pin - preserve important memory
     {
         name: "memory_pin",
-        description: "Pin/unpin a memory.",
+        description: `## Pin/Unpin Memory
+
+**Purpose:** Pin important memories to prevent deletion and ensure recall.
+
+**Pinned Memories:**
+- Never auto-deleted during cleanup
+- Always included in context
+- Protected from TTL expiration
+
+**Use Cases:**
+- Preserving critical decisions
+- Keeping important learnings
+- Protecting key information
+
+**Keywords:** pin, unpin, preserve, protect, important, sticky, star
+
+**Example:**
+\`\`\`json
+{
+  "memoryId": "mem_abc123",
+  "pinned": true
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -588,7 +746,30 @@ export const memoryTools = [
     // 7. stats - memory system info
     {
         name: "memory_stats",
-        description: "Get memory statistics.",
+        description: `## Get Memory Statistics
+
+**Purpose:** View memory system configuration and statistics.
+
+**Returns:**
+- Short-term threshold (default: 20%)
+- Long-term threshold (default: 75%)
+- Auto-summarize interval
+- Total memories count
+- Average priority
+
+**Use Cases:**
+- Checking memory health
+- Understanding recall behavior
+- System diagnostics
+
+**Keywords:** stats, statistics, info, system, health, diagnostics
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: { userId: { type: "string" } },
@@ -618,7 +799,39 @@ export const memoryTools = [
     // 8. cleanup - clean old memories
     {
         name: "memory_cleanup",
-        description: "Clean up old memories (pinned preserved).",
+        description: `## Clean Up Old Memories
+
+**Purpose:** Delete memories older than specified days (pinned preserved).
+
+**Safety Features:**
+- Preview mode available (preview: true)
+- Pinned memories are NEVER deleted
+- Only affects LongTermMemory
+
+**Use Cases:**
+- Periodic maintenance
+- Freeing up storage
+- Removing stale information
+
+**Keywords:** cleanup, delete, remove, old, stale, purge, maintain
+
+**Example - Preview:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "daysOld": 90,
+  "preview": true
+}
+\`\`\`
+
+**Example - Execute:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "daysOld": 90,
+  "preview": false
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -650,7 +863,31 @@ export const memoryTools = [
     // 9. inspect - view memory details
     {
         name: "memory_inspect",
-        description: "View full memory details.",
+        description: `## Inspect Memory Details
+
+**Purpose:** View full details of a specific memory including completeness score.
+
+**Returns:**
+- Full content and summary
+- Priority percentage
+- Pin status
+- Access count
+- Completeness score (how rich the memory is)
+- Extracted action items (TODO, FIXME, NOTE patterns)
+
+**Use Cases:**
+- Verifying stored memory
+- Checking memory quality
+- Extracting action items
+
+**Keywords:** inspect, view, details, check, examine, full
+
+**Example:**
+\`\`\`json
+{
+  "memoryId": "mem_abc123"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: { memoryId: { type: "string" } },
@@ -688,7 +925,29 @@ export const memoryTools = [
     // 10. batch - store multiple conversations
     {
         name: "memory_batch",
-        description: "Store multiple conversations at once.",
+        description: `## Batch Store Conversations
+
+**Purpose:** Store multiple conversation turns at once efficiently.
+
+**Use Cases:**
+- Importing conversation history
+- Bulk saving
+- Migration from other systems
+
+**Keywords:** batch, bulk, multiple, import, store, many
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "sessionId": "morning-chat-001",
+  "conversations": [
+    {"user": "Hello", "agent": "Hi there!"},
+    {"user": "How are you?", "agent": "I'm doing well."},
+    {"user": "What can you do?", "agent": "I can help with tasks, memories, and more."}
+  ]
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -725,7 +984,38 @@ export const memoryTools = [
     // 11. insights - extract key learnings from memory
     {
         name: "memory_insights",
-        description: "Extract key learnings, patterns, and insights from memory.",
+        description: `## Extract Insights from Memory
+
+**Purpose:** Analyze memories to extract learnings, patterns, and key information.
+
+**Focus Options:**
+| Focus | Returns |
+|-------|---------|
+| questions | All questions asked |
+| errors | Errors and issues encountered |
+| progress | Completed items and successes |
+| all | Everything combined |
+
+**Analysis Includes:**
+- Question patterns
+- Error tracking
+- Progress/completion tracking
+- Top keywords/frequency
+
+**Use Cases:**
+- Understanding what you work on most
+- Finding recurring issues
+- Reviewing completed work
+
+**Keywords:** insights, learnings, patterns, analyze, extract, summarize
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "focus": "all"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -799,7 +1089,30 @@ export const memoryTools = [
     // 12. trim - smart context trimming for LLM
     {
         name: "memory_trim",
-        description: "Smart context trimming - preserves important parts when reducing size.",
+        description: `## Smart Context Trimming
+
+**Purpose:** Reduce context size while preserving important parts.
+
+**Smart Trimming:**
+- Cuts at sentence boundaries when possible
+- Falls back to word boundaries if needed
+- Preserves summaries + recent messages
+
+**Use Cases:**
+- Freeing up context window
+- Creating concise prompts
+- Summarizing for external use
+
+**Keywords:** trim, reduce, shorten, compress, context, concise
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "sessionId": "morning-chat-001",
+  "maxChars": 3000
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -843,7 +1156,32 @@ export const memoryTools = [
     // 13. analytics - session-level analytics and insights
     {
         name: "memory_analytics",
-        description: "Get session-level analytics: topics, time spent, questions vs commands ratio, completion rate.",
+        description: `## Get Memory Analytics
+
+**Purpose:** Analyze conversation patterns and session metrics.
+
+**Analytics Includes:**
+- Intent breakdown (questions, commands, errors, etc.)
+- Top keywords/topics
+- Top entities mentioned
+- Estimated session duration
+- Completion rate (commands → success)
+- Question ratio
+
+**Use Cases:**
+- Understanding conversation patterns
+- Measuring productivity
+- Identifying focus areas
+
+**Keywords:** analytics, metrics, stats, patterns, analysis, productivity
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "days": 7
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -920,7 +1258,30 @@ export const memoryTools = [
     // 14. export - export memories to JSON
     {
         name: "memory_export",
-        description: "Export memories to JSON. Includes long-term memories, session summaries, and optional short-term chats.",
+        description: `## Export Memories
+
+**Purpose:** Export all memories to JSON for backup or migration.
+
+**Exports:**
+- Long-term memories (with keywords, entities, priority)
+- Session summaries
+- Short-term chats (optional)
+
+**Use Cases:**
+- Backing up memories
+- Migrating to new system
+- Sharing memories with another user
+
+**Keywords:** export, backup, save, JSON, migrate, download
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "includeShortTerm": true,
+  "limit": 100
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -991,7 +1352,29 @@ export const memoryTools = [
     // 15. import - import memories from JSON
     {
         name: "memory_import",
-        description: "Import memories from JSON export. Merges with existing memories.",
+        description: `## Import Memories
+
+**Purpose:** Import memories from JSON export to restore or merge.
+
+**Imports:**
+- Long-term memories
+- Session summaries
+
+**Use Cases:**
+- Restoring from backup
+- Merging memories from another system
+- Cross-user memory transfer
+
+**Keywords:** import, restore, merge, upload, load
+
+**Example:**
+\`\`\`json
+{
+  "userId": "nandini",
+  "projectId": "new-project",
+  "importData": "{\"longTermMemories\":[...],\"sessionSummaries\":[...]}"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -1050,7 +1433,33 @@ export const memoryTools = [
     // 16. link - link related conversations/threads
     {
         name: "memory_link",
-        description: "Link two memories together as related. Creates explicit thread relationship.",
+        description: `## Link Memories
+
+**Purpose:** Create explicit relationships between memories for better recall.
+
+**Relationship Types:**
+| Type | Meaning |
+|------|---------|
+| related | General connection |
+| follows | Memory A follows from B |
+| supersedes | Memory A replaces B |
+| references | Memory A references B |
+
+**Use Cases:**
+- Creating conversation threads
+- Linking related discussions
+- Building memory connections
+
+**Keywords:** link, connect, relate, thread, relationship
+
+**Example:**
+\`\`\`json
+{
+  "memoryId1": "mem_abc123",
+  "memoryId2": "mem_def456",
+  "relationship": "follows"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {

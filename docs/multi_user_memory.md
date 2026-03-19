@@ -11,14 +11,14 @@ A perspective-based memory system that enables AI agents to understand, store, a
 │                    Shared Knowledge                          │
 │  Person B told Person A: "Complete project by Sunday"       │
 └─────────────────────────────────────────────────────────────┘
-         │                                    │
-         ▼                                    ▼
+          │                                    │
+          ▼                                    ▼
 ┌─────────────────────┐        ┌─────────────────────┐
 │   USER's Memory     │        │   WIFE's Memory     │
 │                     │        │                     │
 │ Perspective:        │        │ Perspective:        │
-│ "I must complete    │        │ "He must complete   │
-│  project by Sunday" │       │  project by Sunday" │
+│ "I must complete   │        │ "He must complete   │
+│  project by Sunday"│       │  project by Sunday" │
 └─────────────────────┘        └─────────────────────┘
 ```
 
@@ -26,41 +26,23 @@ A perspective-based memory system that enables AI agents to understand, store, a
 
 ## Quick Start
 
-### 1. Run Migration
-
-```bash
-sqlite3 memory_mcp.db < migrations/001_perspective_system.sql
-```
-
-### 2. Start Using
+### Using Consolidated Tools
 
 ```javascript
-// Create a session
-create_session({ ownerId: "user", type: "persistent", title: "My Session" })
-
 // Extract entities from conversation
-extract_entities({
-  text: "John told me to complete the report by Friday. He works with Sarah.",
-  ownerId: "user",
-  projectId: "work"
-})
+extract({ op: "entities", userId: "user", text: "John told me to complete the report by Friday. He works with Sarah." })
 
 // Get better context
-get_better_context({
-  ownerId: "user",
-  timeRange: "week",
-  includeTimeline: true,
-  includeRelations: true
-})
+context({ op: "better", userId: "user", timeRange: "week" })
 
 // Share with wife
-share_memory({
-  memoryId: "tl_xxx",
-  memoryType: "timeline",
-  fromOwnerId: "user",
-  toOwnerId: "wife",
-  perspectiveNote: "He has deadline on Friday"
-})
+share({ op: "share", userId: "user", toOwnerId: "wife", content: "He has deadline on Friday" })
+
+// View what's shared with you
+share({ op: "shared_with_me", userId: "wife" })
+
+// Get person's memories
+share({ op: "person_memories", userId: "user", personId: "John" })
 ```
 
 ---
@@ -70,196 +52,83 @@ share_memory({
 | Type | Description | Example |
 |------|-------------|---------|
 | `Person` | Human individuals | John, Sarah, Wife |
-| `Bot` | AI assistants/bots | CodeBot, ChatBot |
+| `Bot` | AI assistants/bots | Claude, CodeBot |
 | `Organization` | Companies/teams | Anthropic, Google |
 | `Task` | Work items with deadlines | Report, Project X |
-| `Event` | Time-based events | Meeting, Deadline |
-| `Topic` | Subject categories | Work, Family, Personal |
+| `Rule` | Guidelines | Validate input |
+| `CoreRule` | Critical rules | Auth required |
+| `LongTermGoal` | Major objectives | Reduce latency |
+| `Epic` | Large features | User auth |
+| `Todo` | Small tasks | Fix button |
+| `Insight` | Lessons | REST is better |
+| `Walkthrough` | Guides | How to deploy |
+
+---
 
 ## Relation Types
 
-| Type | From → To | Example |
-|------|-----------|---------|
-| `KNOWS` | Person → Person | John KNOWS Sarah |
-| `WORKS_WITH` | Person → Person/Bot | John WORKS_WITH CodeBot |
-| `TOLD` | Person → Person | Wife TOLD John |
-| `CONTACTS` | Person → Person/Bot | John CONTACTS Support |
-| `BELONGS_TO` | Person → Org | John BELONGS_TO Anthropic |
-| `MANAGED_BY` | Person → Person | Alice MANAGED_BY John |
-| `OWNS` | Person → Bot | Mike OWNS CodeBot |
-| `DEADLINE_FOR` | Task → Person | "Report" DEADLINE_FOR John |
+| Type | Meaning | Example |
+|------|---------|---------|
+| DEPENDS_ON | A needs B | Task A → Task B |
+| SUBTASK_OF | A part of B | Bug → Sprint |
+| FOLLOWS | A after B | Test → Code |
+| GOVERNED_BY | A follows B | Code → Rules |
+| PART_OF | A belongs to B | Feature → Epic |
+| WORKS_WITH | A collaborates | Dev ↔ Designer |
+| KNOWS | A knows B | Person ↔ Person |
+| TOLD | A told B | Person → Person |
+| CONTACTS | A contacted B | Person → Person |
+| BELONGS_TO | A belongs to B | Person → Org |
+| MANAGED_BY | A managed by B | Employee → Manager |
+| OWNS | A owns B | Person → Project |
+| DEADLINE_FOR | Task deadline | Report → Manager |
 
 ---
 
-## Session Types
+## Key Concepts
 
-| Type | Use Case |
-|------|----------|
-| `persistent` | Always continue same session |
-| `topic` | Per-topic discussions |
-| `timeline` | Time-based sessions |
-| `cross` | Merged virtual sessions |
+### Perspective
 
----
+- `self` = Your own memory
+- `other` = Shared with you by others
 
-## New MCP Tools
+### Sharing Flow
 
-### Entity Extraction
-```javascript
-extract_entities({
-  text: "Conversation text...",
-  ownerId: "user",
-  method: "both",  // pattern, llm, or both
-  autoStore: true
-})
 ```
-
-### Better Context
-```javascript
-get_better_context({
-  ownerId: "user",
-  sessionId: "sess_xxx",
-  timeRange: "week",  // today, week, month, all
-  includeTimeline: true,
-  includeTopics: true,
-  includeRelations: true,
-  includeShared: true,
-  maxTokens: 8000
-})
-```
-
-### Sessions
-```javascript
-create_session({ ownerId: "user", type: "topic", title: "Project X" })
-switch_topic({ sessionId: "sess_xxx", ownerId: "user", newTopicId: "topic_yyy" })
-get_timeline({ ownerId: "user", granularity: "hour" })
-```
-
-### Sharing
-```javascript
-share_memory({ memoryId: "xxx", fromOwnerId: "user", toOwnerId: "wife" })
-get_shared_with_me({ ownerId: "wife" })
-mark_shared_read({ ownerId: "wife" })
-```
-
-### Person Memories
-```javascript
-get_person_memories({ ownerId: "user", personId: "John", perspective: "all" })
+User A creates memory
+        ↓
+User A shares with User B
+        ↓
+User B sees memory from "other" perspective
+        ↓
+User B can add their own memory about same event
 ```
 
 ---
 
-## Perspective System
+## Common Patterns
 
-### How It Works
-
-1. **Source Detection**: When Person B tells something to Person A
-2. **Auto-Extract**: System detects the relationship
-3. **Multi-Store**: 
-   - Store for Person A with `perspectiveOf: "self"`
-   - Store for Person B with `sourcePersonId` tracking
-
-### Example
-
+### Share Task Deadline
 ```javascript
-// Wife tells John: "You need to complete Project X by Sunday"
-extract_entities({
-  text: "Wife told John he needs to complete Project X by Sunday",
-  ownerId: "john",
-  sourcePersonId: "wife_id"
-})
+share({ op: "share", userId: "user", toOwnerId: "wife", content: "Project deadline is Sunday" })
+```
 
-// Results:
-// Memory for John: "Wife told me I need to complete Project X by Sunday" (perspective: self)
-// Memory for Wife: "I told John about Project X deadline" (sourcePersonId: wife)
+### View Shared Memories
+```javascript
+share({ op: "shared_with_me", userId: "wife" })
+share({ op: "shared_by_me", userId: "user" })
+```
+
+### Get Person Network
+```javascript
+share({ op: "get_network", userId: "user", personId: "John" })
 ```
 
 ---
 
-## Timeline Granularity
-
-### Hourly View (Default)
-```javascript
-get_timeline({ ownerId: "user", granularity: "hour" })
-// Returns: { timeSlot: "2026-03-19T14:00", entries: [...], count: 3 }
-```
-
-### Daily View
-```javascript
-get_timeline({ ownerId: "user", granularity: "day" })
-// Returns: { timeSlot: "2026-03-19", entries: [...], count: 15 }
-```
-
----
-
-## Multi-User Setup
-
-### For You and Wife
-
-```javascript
-// Create sessions for both
-create_session({ ownerId: "user", type: "persistent" })
-create_session({ ownerId: "wife", type: "persistent" })
-
-// When wife shares something with you
-share_memory({
-  memoryId: "tl_xxx",
-  memoryType: "timeline",
-  fromOwnerId: "wife",
-  toOwnerId: "user",
-  perspectiveNote: "Important deadline"
-})
-
-// Get shared memories
-get_shared_with_me({ ownerId: "user" })
-```
-
----
-
-## Configuration (.env)
+## Configuration
 
 ```env
-# Default search limits
-DEFAULT_SEARCH_LIMIT=10
-DEFAULT_SEARCH_OFFSET=0
-DEFAULT_CONFIDENCE_THRESHOLD=20
-
-# LLM Extraction (optional)
-LLM_EXTRACTION_URL=https://api.openai.com/v1/chat/completions
+TOOL_PREFIX=memory
+ENABLE_DEFER_LOADING=false
 ```
-
----
-
-## Migration
-
-### Fresh Database
-```bash
-sqlite3 memory_mcp.db < migrations/001_perspective_system.sql
-```
-
-### Existing Database
-1. Backup your data
-2. Run migration script
-3. Verify indexes created
-4. Test with `get_better_context`
-
----
-
-## Error Handling
-
-| Error | Solution |
-|-------|----------|
-| `Session not found` | Create session first with `create_session` |
-| `Memory not found` | Check memoryId is correct |
-| `Permission denied` | Verify ownerId matches |
-| `LLM extraction failed` | Falls back to pattern matching |
-
----
-
-## Tips
-
-1. **Always use ownerId**: Ensures proper memory isolation
-2. **Use sourcePersonId**: For tracking who shared what
-3. **Set perspectiveNote**: Helps understand context later
-4. **Use timeRange**: Limits context to relevant period
-5. **Auto-share**: System shares with related persons automatically

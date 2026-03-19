@@ -25,7 +25,37 @@ const baseSchema = z.object({
 export const multiUserTools = [
     {
         name: "extract_entities",
-        description: "Extract entities (Person, Bot, Organization, Task) and relationships from text using LLM + pattern matching. Auto-stores to memory with perspective.",
+        description: `## Extract Entities from Text
+
+**Purpose:** Automatically extract persons, bots, organizations, tasks from text.
+
+**Entity Types Extracted:** Person, Bot, Organization, Task, Event, Topic
+
+**Extraction Methods:**
+| Method | Use When |
+|--------|----------|
+| pattern | Fast, no API needed |
+| llm | More accurate, needs LLM_EXTRACTION_URL |
+| both | Best accuracy, uses both |
+
+**Use Cases:**
+- Processing conversation text
+- Building knowledge graph from text
+- Extracting contacts from messages
+- Auto-organizing information
+
+**Keywords:** extract, entities, parse, persons, organizations, NER
+
+**Example:**
+\`\`\`json
+{
+  "text": "John from Acme Inc called. He needs the report by Friday. Tell Sarah to send it.",
+  "ownerId": "user123",
+  "projectId": "work",
+  "method": "both",
+  "autoStore": true
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -110,7 +140,37 @@ export const multiUserTools = [
 
     {
         name: "get_better_context",
-        description: "Get comprehensive context with timeline, topics, relationships, and shared memories. Best for AI context.",
+        description: `## Get Better Context (Comprehensive)
+
+**Purpose:** All-in-one context retrieval with timeline, topics, relations, and shared memories.
+
+**Use Cases:**
+- Starting new conversation with full context
+- Getting AI-ready context
+- Cross-session memory retrieval
+- Comprehensive overview
+
+**Options:**
+- includeTimeline: Recent memories grouped by date
+- includeTopics: Topic-based organization
+- includeRelations: People/bots/organizations with relationships
+- includeShared: Shared memories from others
+- timeRange: today, week, month, all
+
+**Keywords:** context, overview, summary, timeline, topics, relations, shared
+
+**Example:**
+\`\`\`json
+{
+  "ownerId": "nandini",
+  "timeRange": "week",
+  "includeTimeline": true,
+  "includeTopics": true,
+  "includeRelations": true,
+  "includeShared": true,
+  "maxTokens": 8000
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {

@@ -20,7 +20,26 @@ export const mcpTools = [
     // Project Operations
     {
         name: "create_project",
-        description: "Create a new project to organize related work.",
+        description: `## Create Project
+
+**Purpose:** Create a new project to organize related work.
+
+**Use Cases:**
+- Starting new project
+- Organizing work by project
+- Grouping tasks, workflows
+
+**Keywords:** project, create, new, organize, workspace
+
+**Example:**
+\`\`\`json
+{
+  "userId": "dev",
+  "name": "My Awesome App",
+  "description": "Main application project",
+  "metadata": {"client": "Acme", "deadline": "2024-06-01"}
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -106,7 +125,40 @@ export const mcpTools = [
     // Task Operations (with todo/completed status)
     {
         name: "plan_task",
-        description: "Plan a new task in my memory with optional sub-items.",
+        description: `## Plan Task
+
+**Purpose:** Create a new task with optional sub-items (todos).
+
+**Task Statuses:** pending, in_progress, completed
+**Priorities:** low, medium, high
+
+**Use Cases:**
+- Planning new work
+- Creating tasks with checklists
+- Breaking down work
+
+**Tool Chaining:**
+- After: Often from create_project
+- Use: add_subtask for additional items
+
+**Keywords:** task, todo, plan, create, subtask, checklist
+
+**Example:**
+\`\`\`json
+{
+  "projectId": "proj_123",
+  "userId": "dev",
+  "title": "Implement user authentication",
+  "description": "Add OAuth2 login with Google",
+  "status": "pending",
+  "priority": "high",
+  "todos": [
+    {"text": "Setup OAuth2 provider", "status": "pending"},
+    {"text": "Create login button", "status": "pending"},
+    {"text": "Handle callback", "status": "pending"}
+  ]
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {
@@ -211,7 +263,22 @@ export const mcpTools = [
     },
     {
         name: "complete_task",
-        description: "Mark a task as completed in my memory.",
+        description: `## Complete Task
+
+**Purpose:** Mark a task as completed.
+
+**Use Cases:**
+- Finishing a planned task
+- Updating task status
+
+**Keywords:** complete, done, finish, finish, task
+
+**Example:**
+\`\`\`json
+{
+  "id": "task_abc123"
+}
+\`\`\``,
         inputSchema: {
             type: "object",
             properties: {

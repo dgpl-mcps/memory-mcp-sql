@@ -1,277 +1,391 @@
-# AI Agent Context & Search Guide
+# AI Agent Memory System - Consolidated Guide
 
-This document provides guidance on which memory functions to use for optimal context retrieval.
-
----
-
-## Configuration (Default from .env)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `DEFAULT_SEARCH_LIMIT` | 10 | Number of results to return |
-| `DEFAULT_SEARCH_OFFSET` | 0 | Pagination offset |
-| `DEFAULT_CONFIDENCE_THRESHOLD` | 20 | Minimum confidence score (0-100) |
-| `ENABLE_DEFER_LOADING` | true | Load all tools on startup (set false in .env for all tools) |
+> **For AI Agents: Use this guide for the consolidated 9-tool memory system.**
 
 ---
 
-## Migration from Obsidian Vault
+## Quick Reference
 
-To migrate from an Obsidian vault SQLite database:
+### Tool Structure: `tool({ op: "operation", ...params })`
 
-```bash
-# Run migration (will use MCP tools automatically)
-node build/migrate_from_vault.js
+**116 tools → 9 tools** via `op` parameter.
+
+### Available Tools
+| Tool | Operations |
+|------|------------|
+| `memory` | remember, recall, history, context, stats, cleanup, boost, pin, inspect, export, import, insights, trim, analytics, link |
+| `entity` | create, read, update, delete, search |
+| `relation` | create, delete, search |
+| `short_term` | set, get, list, delete, clear, search |
+| `project` | create_project, get_project, list_projects, delete_project, plan_task, get_task, list_tasks, update_task, complete_task, delete_task, plan_workflow, get_workflow, list_workflows |
+| `session` | create, get, list, end, switch, merge, timeline, cross |
+| `context` | better, chat_add, chat_get, chat_summary, get_summary |
+| `extract` | entities, text, keypoint, thought, note, discovery, mistake, learning, boundary |
+| `share` | share, shared_with_me, shared_by_me, get_network, person_memories |
+| `search` | tool search |
+
+### Tool Naming
+- All tools have `memory_` prefix (default)
+- Use `search({ query: "..." })` to find tools
+
+---
+
+## Configuration (.env)
+
+```env
+TOOL_PREFIX=memory
+ENABLE_DEFER_LOADING=false
+
+DEFAULT_SEARCH_LIMIT=10
+DEFAULT_CONFIDENCE_THRESHOLD=20
+
+SHORT_TERM_THRESHOLD=20%    # Below → short-term
+LONG_TERM_THRESHOLD=75%     # Above → long-term
 ```
 
-The migration script:
-1. Reads chunks from `main.sqlite`
-2. Uses `extract_entities` to extract persons, bots, organizations
-3. Uses `add_timeline_entry` to store content
-4. Creates topics based on path structure
+---
+
+## MUST-KNOW Parameters
+
+| Param | Purpose | Required |
+|-------|---------|----------|
+| `op` | Operation to perform | Yes |
+| `userId` | Who owns this | Yes |
+| `projectId` | Project context | Often |
+| `sessionId` | Conversation thread | For session ops |
 
 ---
 
-## Startup / First Chat
+## Tool Reference
 
-Use these functions when starting a new conversation or when you need to establish context:
+---
 
-### Step 1: Store the conversation first
+### 1. memory
+
+Store, search, and manage memories.
+
+**Operations:**
+| Op | Description | Params |
+|----|-------------|--------|
+| remember | Store conversation | userMessage, agentMessage, sessionId |
+| recall | Search memories | query, scope, limit |
+| history | Get conversation history | sessionId, limit |
+| context | LLM-optimized context | sessionId, maxTokens |
+| stats | Memory statistics | - |
+| cleanup | Delete old memories | daysOld, preview |
+| boost | Adjust priority | memoryId, delta |
+| pin | Pin/unpin memory | memoryId, pinned |
+| inspect | View memory details | memoryId |
+| export | Export to JSON | includeShortTerm, limit |
+| import | Import from JSON | importData |
+| insights | Extract patterns | focus, days |
+| trim | Smart trimming | sessionId, maxChars |
+| analytics | Session analytics | sessionId, days |
+| link | Link memories | memoryId1, memoryId2 |
+
+**Examples:**
 ```javascript
-// Store user message and agent response
-memory_remember({
-  userId: "user1",
-  projectId: "proj1",
-  sessionId: "new_session_id",
-  userMessage: "What is React?",
-  agentMessage: "React is a JavaScript library..."
-})
+// Remember
+memory({ op: "remember", userId: "u1", sessionId: "s1", userMessage: "Q?", agentMessage: "A!" })
+
+// Recall
+memory({ op: "recall", userId: "u1", query: "deadline" })
+
+// Stats
+memory({ op: "stats", userId: "u1" })
 ```
 
-### Step 2: Recall context from previous sessions
+---
+
+### 2. entity
+
+Manage knowledge graph entities.
+
+**Entity Types:** Person, Bot, Organization, Task, Rule, CoreRule, LongTermGoal, Epic, Todo, Insight, Walkthrough
+
+**Operations:**
+| Op | Description |
+|----|-------------|
+| create | Create new entity |
+| read | Get by ID |
+| update | Update name/properties |
+| delete | Delete entity |
+| search | Find by type/name |
+
+**Examples:**
 ```javascript
-// BEST CHOICE - Searches short-term → long-term → cross-session
-memory_recall({
-  userId: "user1",
-  projectId: "proj1",  // Required!
-  sessionId: "new_session_id",
-  query: "previous work on this project",
-  limit: 10,
-  offset: 0,
-  confidenceThreshold: 20
-})
+// Create
+memory({ op: "create", userId: "u1", projectId: "p1", entityType: "Person", name: "Priya Sharma", properties: {role: "Lead"} })
 
-// Fallback: Typo-tolerant search
-memory_fuzzy_recall({
-  userId: "user1",
-  projectId: "proj1",  // Required!
-  query: "react hooks"
-})
-
-// Global: Search ALL memories (no userId/projectId filter)
-global_memory_search({
-  query: "api setup"
-  // Optional: userId, projectId, limit, offset, confidenceThreshold
-})
+// Search
+memory({ op: "search", userId: "u1", entityType: "Person", search: "priya" })
 ```
 
-### Alternative: Semantic Embedding Search
+---
+
+### 3. relation
+
+Create and manage entity relationships.
+
+**Relation Types:** DEPENDS_ON, SUBTASK_OF, FOLLOWS, GOVERNED_BY, PART_OF, WORKS_WITH, KNOWS, TOLD, CONTACTS, BELONGS_TO, MANAGED_BY, OWNS, DEADLINE_FOR
+
+**Operations:**
+| Op | Description |
+|----|-------------|
+| create | Create relation |
+| delete | Delete relation |
+| search | Find relations |
+
+**Examples:**
 ```javascript
-// Uses vector embeddings for semantic similarity
-recall({
-  userId: "user1",
-  query: "how to setup database",
-  refTable: "ShortTermChat",  // Optional: filter by table
-  limit: 10,
-  offset: 0
-})
+// Create
+memory({ op: "create", userId: "u1", fromId: "e1", toId: "e2", type: "DEPENDS_ON" })
+
+// Search
+memory({ op: "search", userId: "u1", entityId: "e1" })
 ```
 
 ---
 
-## Continued Chats
+### 4. short_term
 
-Use these functions during an ongoing conversation:
+Fast key-value storage for session data.
 
-### Primary Functions
+**Operations:**
+| Op | Description |
+|----|-------------|
+| set | Store key-value |
+| get | Get by key |
+| list | List all keys |
+| delete | Delete key |
+| clear | Clear all |
+| search | Search values |
 
-| Function | Use Case |
-|----------|----------|
-| **`memory_context`** | **BEST CHOICE** - Token-optimized context for LLM |
-| **`memory_history`** | Get conversation history for current session |
-| **`add_chat_message`** | Store individual chat messages |
-| **`search_short_term_memory`** | Search only current session's memory |
-
-### Example - Ongoing Context
+**Examples:**
 ```javascript
-// Get LLM-optimized context (summarized)
-memory_context({
-  userId: "user1",
-  sessionId: "current_session",
-  maxTokens: 6000,
-  limit: 10
-})
+// Set
+memory({ op: "set", userId: "u1", key: "active_task", value: {id: "t1"} })
 
-// Store each message
-add_chat_message({
-  userId: "user1",
-  projectId: "proj1",
-  sessionId: "current_session",
-  role: "user",  // or "assistant"
-  content: "User message here"
-})
+// Get
+memory({ op: "get", userId: "u1", key: "active_task" })
 
-// Background search while chatting
-memory_recall({
-  userId: "user1",
-  projectId: "proj1",
-  sessionId: "current_session",
-  query: "api configuration"
-})
-
-// Get session history
-memory_history({
-  userId: "user1",
-  sessionId: "current_session",
-  limit: 10,
-  offset: 0
-})
+// List
+memory({ op: "list", userId: "u1" })
 ```
 
 ---
 
-## All Search Functions
+### 5. project
 
-### Core Memory Search
+Manage projects, tasks, and workflows.
 
-| Function | Description | Required Params |
-|----------|-------------|-----------------|
-| `memory_recall` | Multi-source search (short-term + long-term + cross-session) | userId, projectId, query |
-| `memory_fuzzy_recall` | Fuzzy search with typo tolerance | userId, projectId, query |
-| `global_memory_search` | Global search (optional userId/projectId filters) | query |
-| `search_short_term_memory` | Search current session memory only | userId, projectId, query |
-| `recall` | Semantic embedding search | userId, query |
+**Project Operations:**
+| Op | Description |
+|----|-------------|
+| create_project | Create project |
+| get_project | Get by ID |
+| list_projects | List all |
+| delete_project | Delete project |
 
-### Specialized Search
+**Task Operations:**
+| Op | Description |
+|----|-------------|
+| plan_task | Create task |
+| get_task | Get by ID |
+| list_tasks | List project tasks |
+| update_task | Update status |
+| complete_task | Mark done |
+| delete_task | Remove task |
 
-| Function | Description |
-|----------|-------------|
-| `search_graph` | Search graph database entities |
-| `deep_search_graph` | Recursive graph search with depth control |
-| `search_document` | Search stored document chunks |
-| `memory_search_by_date` | Search by date range |
-| `memory_search_by_tag` | Search by tags |
-| `search_insights` | Search agent insights |
-| `search_tools` | Search registered tools |
+**Workflow Operations:**
+| Op | Description |
+|----|-------------|
+| plan_workflow | Create workflow |
+| get_workflow | Get by ID |
+| list_workflows | List workflows |
 
-### Context & History
+**Examples:**
+```javascript
+// Create project
+memory({ op: "create_project", userId: "u1", name: "My App" })
 
-| Function | Description |
-|----------|-------------|
-| `memory_context` | Token-optimized LLM context |
-| `memory_history` | Conversation history with summaries |
-| `get_chat_history` | Raw chat history |
+// Plan task
+memory({ op: "plan_task", userId: "u1", projectId: "p1", title: "Fix bug", status: "pending" })
 
-### Storage Functions
-
-| Function | Description |
-|----------|-------------|
-| `memory_remember` | Store conversation (userMessage + agentMessage) |
-| `memorize` | Store general content to embeddings |
-| `add_chat_message` | Store individual chat message |
-| `store_insight` | Store agent insight to graph |
-
----
-
-## Recommended Flow
-
-### 1. Startup Flow
-```
-1. First: memory_remember() to store initial context
-   ↓
-2. Then: memory_recall(query, userId, projectId, sessionId)
-   ↓
-3. If no results → memory_fuzzy_recall(query, userId, projectId)
-   ↓
-4. If still nothing → global_memory_search(query) [works WITHOUT filters!]
-```
-
-### 2. Continued Chat Flow
-```
-1. Start with: memory_context(userId, sessionId, maxTokens)
-   ↓
-2. Store each message: add_chat_message(userId, projectId, sessionId, role, content)
-   ↓
-3. Background: memory_recall(query) for relevant context
-   ↓
-4. On demand: search_short_term_memory(userId, projectId, query)
-```
-
-### 3. Fallback Flow
-```
-If specific search fails → try global_memory_search WITHOUT filters
+// Complete task
+memory({ op: "complete_task", id: "task_123" })
 ```
 
 ---
 
-## Response Format
+### 6. session
 
-All search functions return a consistent format:
+Manage conversation sessions and timelines.
 
-```json
-{
-  "results": [...],
-  "search_context": {
-    "limit": 10,
-    "offset": 0,
-    "confidenceThreshold": 20,
-    "scope": "all",
-    "source": "memory_recall"
-  }
-}
+**Operations:**
+| Op | Description |
+|----|-------------|
+| create | Create session |
+| get | Get by ID |
+| list | List sessions |
+| end | End session |
+| switch | Switch topic |
+| merge | Merge sessions |
+| timeline | Get timeline |
+| cross | Cross-session memories |
+
+**Examples:**
+```javascript
+// Create
+memory({ op: "create", userId: "u1", type: "persistent", title: "Morning chat" })
+
+// Timeline
+memory({ op: "timeline", userId: "u1", granularity: "day" })
+
+// List active
+memory({ op: "list", userId: "u1", isActive: true })
 ```
 
 ---
 
-## Common Errors & Solutions
+### 7. context
+
+Get comprehensive context for conversations.
+
+**Operations:**
+| Op | Description |
+|----|-------------|
+| better | All-in-one context |
+| chat_add | Add chat message |
+| chat_get | Get chat history |
+| chat_summary | Store summary |
+| get_summary | Get summaries |
+
+**Examples:**
+```javascript
+// Get better context
+memory({ op: "better", userId: "u1", timeRange: "week" })
+
+// Add chat
+memory({ op: "chat_add", userId: "u1", role: "user", content: "Hello" })
+
+// Get chat history
+memory({ op: "chat_get", userId: "u1" })
+```
+
+---
+
+### 8. extract
+
+Extract entities and remember information.
+
+**Operations:**
+| Op | Description |
+|----|-------------|
+| entities | Extract from text |
+| text | Remember general |
+| keypoint | Remember highlight |
+| thought | Add thought |
+| note | General note |
+| discovery | New discovery |
+| mistake | Remember mistake |
+| learning | Lesson learned |
+| boundary | Scope boundary |
+
+**Examples:**
+```javascript
+// Extract entities
+memory({ op: "entities", userId: "u1", text: "John from Acme called", autoStore: true })
+
+// Remember learning
+memory({ op: "learning", userId: "u1", insight: "Tests first" })
+
+// Remember mistake
+memory({ op: "mistake", userId: "u1", description: "Forgot validation", resolution: "Added middleware" })
+```
+
+---
+
+### 9. share
+
+Share memories with others and view shared content.
+
+**Operations:**
+| Op | Description |
+|----|-------------|
+| share | Share memory |
+| shared_with_me | View shared with you |
+| shared_by_me | View shared by you |
+| get_network | Get relation network |
+| person_memories | Get person's memories |
+
+**Examples:**
+```javascript
+// Share
+memory({ op: "share", userId: "u1", toOwnerId: "u2", content: "Deadline Sunday" })
+
+// View shared
+memory({ op: "shared_with_me", userId: "u1" })
+
+// Person's memories
+memory({ op: "person_memories", userId: "u1", personId: "John" })
+```
+
+---
+
+### 10. search
+
+**[META]** Search available tools by keyword.
+
+**Examples:**
+```javascript
+memory({ query: "entity" })
+```
+
+Returns matching tools with their operations.
+
+---
+
+## Common Patterns
+
+### Store & Recall
+```
+1. memory({ op: "remember", ... })
+2. memory({ op: "recall", query: "..." })
+3. entity({ op: "search", ... })
+```
+
+### Project Management
+```
+1. project({ op: "create_project", ... })
+2. project({ op: "plan_task", ... })
+3. project({ op: "complete_task", ... })
+```
+
+### Context Building
+```
+1. context({ op: "better", timeRange: "week" })
+2. extract({ op: "entities", text: "..." })
+3. entity({ op: "create", ... })
+```
+
+---
+
+## Error Handling
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `FOREIGN KEY constraint failed` | Project/Task doesn't exist | Create project first with `create_project()` |
-| `Schema Validation Failed` | Missing required params | Check required params for each tool |
-| `NOT NULL constraint failed` | Missing required field like `name` | Provide all required fields |
-| No results | Wrong userId/projectId | Use `global_memory_search` without filters |
+| "id required" | Missing ID | Add `id` param |
+| "sessionId required" | Missing sessionId | Add `sessionId` |
+| "entityType and name required" | Missing params | Add both |
+| "Unknown op" | Invalid operation | Check tool docs |
 
 ---
 
-## Tips for Better Context
+## Tips
 
-1. **Always create project first** - Many tools require valid projectId
-   ```javascript
-   create_project({ userId: "user1", name: "My Project" })
-   ```
-
-2. **Store messages with add_chat_message** - Better context tracking
-   ```javascript
-   add_chat_message({ userId, projectId, sessionId, role: "user", content: "..." })
-   ```
-
-3. **Use memory_remember** - For full conversation storage
-   ```javascript
-   memory_remember({ userId, projectId, sessionId, userMessage, agentMessage })
-   ```
-
-4. **Provide userId** - Ensures personalized results
-5. **Provide sessionId** - Enables cross-session memory linking
-6. **Use projectId** - Scopes search to specific project
-7. **Set confidenceThreshold** - Higher (50+) for precise, Lower (10-20) for more results
-8. **Use pagination** - `limit` + `offset` for large result sets
-
----
-
-## Important Notes
-
-- **`global_memory_search`** can work WITHOUT userId/projectId - searches ALL memories
-- **Most tools require projectId** except: global_memory_search, memory_stats, diagnose_memory_health
-- **memory_recall requires projectId** even though it's useful for search
-- **Vector search (recall)** requires embedding table setup - falls back gracefully if not available
+1. **Always use `userId`** - Ensures proper memory isolation
+2. **Use `op` parameter** - Specifies which operation
+3. **Pin important memories** - Never deleted
+4. **Link memories** - Creates explicit relationships
+5. **Export regularly** - Backup important memories

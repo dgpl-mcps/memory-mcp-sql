@@ -10,17 +10,15 @@ import {
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import dotenv from "dotenv";
 import { initSqlite } from "./db/sqlite.js";
-import { graphTools } from "./tools/graph.js";
-import { shortTermTools } from "./tools/shortTerm.js";
-import { mcpTools } from "./tools/mcp.js";
-import { contextTools } from "./tools/context.js";
-import { projectTools } from "./tools/project.js";
-import { documentTools } from "./tools/document.js";
-import { hybridTools } from "./tools/hybrid.js";
-import { systemTools } from "./tools/system.js";
-import { selfImprovementTools } from "./tools/selfImprovement.js";
-import { memoryTools } from "./tools/memoryCompression.js";
-import { multiUserTools } from "./tools/multiUser.js";
+import { memoryTool } from "./tools/memory_v2.js";
+import { entityTool } from "./tools/entity_v2.js";
+import { relationTool } from "./tools/relation_v2.js";
+import { shortTermTool } from "./tools/short_term_v2.js";
+import { projectTool } from "./tools/project_v2.js";
+import { contextTool } from "./tools/context_v2.js";
+import { extractTool } from "./tools/extract_v2.js";
+import { shareTool } from "./tools/share_v2.js";
+import { searchTool } from "./tools/search_v2.js";
 import { AuditLogger } from "./utils/logger.js";
 import { CircuitBreaker } from "./utils/circuit.js";
 import { validateEnv } from "./utils/env.js";
@@ -38,17 +36,15 @@ dotenv.config({ path: envPath });
 
 // Step 1 - Extract all tool definitions into a module-level ALL_TOOLS constant
 const ALL_TOOLS: any[] = [
-    ...graphTools,
-    ...shortTermTools,
-    ...mcpTools,
-    ...contextTools,
-    ...projectTools,
-    ...documentTools,
-    ...hybridTools,
-    ...systemTools,
-    ...selfImprovementTools,
-    ...memoryTools,
-    ...multiUserTools,
+    memoryTool,
+    entityTool,
+    relationTool,
+    shortTermTool,
+    projectTool,
+    contextTool,
+    extractTool,
+    shareTool,
+    searchTool,
 ];
 
 // V6 Hardening: Fatal fail immediately if Environment configuration is corrupted
