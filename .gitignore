@@ -15,6 +15,12 @@ dist/
 *.db-journal
 *.db-wal
 *.db-shm
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.gz
+*.zip
 
 # Logs
 *.log
