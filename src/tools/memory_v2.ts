@@ -215,7 +215,11 @@ export const memoryTool = {
     },
     handler: async (args: any) => {
         const { op, userId, projectId, sessionId } = args;
-        const cfg = getMemoryConfig();
+        
+        // Validate userId is provided
+        if (!userId) {
+            return { isError: true, content: [{ type: "text", text: "userId is required" }] };
+        }
         
         try {
             switch (op) {
@@ -877,8 +881,8 @@ export const memoryTool = {
                         avgPriority: Math.round((avgPriority?.p || 0.5) * 100) + "%",
                         intentBreakdown: intents.reduce((acc: any, i: any) => { acc[i.intent || "general"] = i.c; return acc; }, {}),
                         thresholds: {
-                            shortTerm: cfg.SHORT_TERM_THRESHOLD + "%",
-                            longTerm: cfg.LONG_TERM_THRESHOLD + "%"
+                            shortTerm: "20%",
+                            longTerm: "75%"
                         }
                     }) }] };
                 }
