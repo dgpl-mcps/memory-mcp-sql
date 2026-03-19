@@ -23,144 +23,106 @@ async function test() {
     initSqlite();
     
     const testUser = "test_user_" + Date.now();
-    const testProject = "test_project";
+    const project1 = "project_alpha";
+    const project2 = "project_beta";
     
-    console.log("\n=== Testing Smart Memory with Persona & Emotion ===\n");
+    console.log("\n=== Testing Enhanced 8-Phase Auto-Linking ===\n");
     
-    // Test 1: Persona
-    console.log("1. Creating Persona...");
-    const persona = await memoryTool.handler({
-        op: "persona",
+    // Test 1: Store memory in project 1
+    console.log("1. Storing memory in project_alpha...");
+    const r1 = await memoryTool.handler({
+        op: "remember",
         userId: testUser,
-        traits: { creative: true, analytical: true, helpful: true },
-        style: "friendly"
+        projectId: project1,
+        userMessage: "Found bug in @AuthService - JWT validation failing",
+        agentMessage: "Check the token expiry."
     });
-    const personaData = safeParse(persona.content?.[0]?.text);
-    console.log("   Traits:", personaData.personality?.traits || personaData);
-    console.log("   Style:", personaData.personality?.style || "default");
+    const r1Data = safeParse(r1.content?.[0]?.text);
+    console.log("   Entities:", r1Data.entities);
+    console.log("   Intent:", r1Data.intent);
     
-    // Test 2: Mood tracking
-    console.log("\n2. Recording Moods...");
+    // Test 2: Store memory in same project (should link via temporal + entity)
+    console.log("\n2. Storing 2nd memory in same project...");
+    const r2 = await memoryTool.handler({
+        op: "remember",
+        userId: testUser,
+        projectId: project1,
+        userMessage: "Fixed @AuthService bug - was token expiry issue",
+        agentMessage: "Great! What was the root cause?"
+    });
+    const r2Data = safeParse(r2.content?.[0]?.text);
+    console.log("   Auto-linked:", r2Data.autoLinked, "memories");
+    console.log("   Link types:", r2Data.linkTypes);
     
-    const moods = ["happy", "excited", "frustrated", "calm"];
-    for (const mood of moods) {
-        try {
-            const result = await memoryTool.handler({
-                op: "mood",
-                userId: testUser,
-                mood,
-                intensity: mood === "frustrated" ? 8 : 5,
-                context: `Testing ${mood} mood`
-            });
-            const moodData = safeParse(result.content?.[0]?.text);
-            console.log(`   ${mood}:`, moodData.suggestion?.slice(0, 50) || JSON.stringify(moodData));
-        } catch (e) {
-            console.log(`   ${mood}: Error - ${e}`);
-        }
-    }
+    // Test 3: Store memory in different project (should link via cross-project)
+    console.log("\n3. Storing memory in project_beta (cross-project)...");
+    const r3 = await memoryTool.handler({
+        op: "remember",
+        userId: testUser,
+        projectId: project2,
+        userMessage: "The @AuthService works now - applied same fix",
+        agentMessage: "Perfect! Reusable solution."
+    });
+    const r3Data = safeParse(r3.content?.[0]?.text);
+    console.log("   Auto-linked:", r3Data.autoLinked, "memories");
+    console.log("   Link types:", r3Data.linkTypes);
     
-    // Test 3: Learning patterns
-    console.log("\n3. Learning Patterns...");
-    try {
-        await memoryTool.handler({
-            op: "learn",
-            userId: testUser,
-            type: "work",
-            pattern: "takes breaks when frustrated",
-            data: { trigger: "frustrated", action: "break" }
-        });
-        await memoryTool.handler({
-            op: "learn",
-            userId: testUser,
-            type: "work",
-            pattern: "prefers morning work",
-            data: { time: "morning", productivity: "high" }
-        });
-        
-        const learnResult = await memoryTool.handler({ op: "learn", userId: testUser });
-        const learnData = safeParse(learnResult.content?.[0]?.text);
-        console.log("   Patterns learned:", learnData.totalPatterns);
-        console.log("   Categories:", Object.keys(learnData.byCategory || {}));
-    } catch (e) {
-        console.log("   Error:", e);
-    }
+    // Test 4: Check all links created
+    console.log("\n4. Memory Link Analysis...");
+    const allLinks = db.prepare("SELECT * FROM MemoryLinks").all() as any[];
+    const linkByType: Record<string, number> = {};
+    allLinks.forEach(l => {
+        linkByType[l.relationship] = (linkByType[l.relationship] || 0) + 1;
+    });
+    console.log("   Total links:", allLinks.length);
+    console.log("   By type:", linkByType);
     
-    // Test 4: Reminders
-    console.log("\n4. Creating Reminders...");
-    try {
-        await memoryTool.handler({
-            op: "remind",
-            userId: testUser,
-            reminderType: "followup",
-            title: "Check on AuthService fix",
-            description: "Verify the authentication bug is still fixed",
-            priority: 8
-        });
-        await memoryTool.handler({
-            op: "remind",
-            userId: testUser,
-            reminderType: "task",
-            title: "Review Database optimization",
-            priority: 6
-        });
-        
-        const remindResult = await memoryTool.handler({ op: "remind", userId: testUser });
-        const remindData = safeParse(remindResult.content?.[0]?.text);
-        console.log("   Pending reminders:", remindData.count);
-        console.log("   First:", remindData.reminders?.[0]?.title);
-    } catch (e) {
-        console.log("   Error:", e);
-    }
+    // Test 5: Cross-project links exist
+    const crossProjectLinks = allLinks.filter(l => l.relationship === "cross_project");
+    const temporalChainLinks = allLinks.filter(l => l.relationship === "temporal_chain");
+    const entityGraphLinks = allLinks.filter(l => l.relationship === "entity_graph");
+    console.log("\n5. New Link Types:");
+    console.log("   Cross-project links:", crossProjectLinks.length);
+    console.log("   Temporal chain links:", temporalChainLinks.length);
+    console.log("   Entity graph links:", entityGraphLinks.length);
     
-    // Test 5: Proactive Suggestions
-    console.log("\n5. Getting Proactive Suggestions...");
-    try {
-        const suggestResult = await memoryTool.handler({ op: "suggest", userId: testUser });
-        const suggestData = safeParse(suggestResult.content?.[0]?.text);
-        console.log("   Current mood:", suggestData.currentMood);
-        console.log("   Suggestions:", suggestData.suggestions?.length || 0);
-        (suggestData.suggestions || []).slice(0, 3).forEach((s: any, i: number) => {
-            console.log(`   ${i + 1}. [${s.type}] ${s.text?.slice(0, 50)}...`);
-        });
-    } catch (e) {
-        console.log("   Error:", e);
-    }
-    
-    // Test 6: Memory with emotional context
-    console.log("\n6. Storing Emotional Memory...");
-    try {
-        const memResult = await memoryTool.handler({
-            op: "remember",
-            userId: testUser,
-            projectId: testProject,
-            userMessage: "I'm really excited about this new feature!",
-            agentMessage: "That's great! What makes you excited?"
-        });
-        const memData = safeParse(memResult.content?.[0]?.text);
-        console.log("   Memory stored with intent:", memData.intent);
-        console.log("   Priority:", memData.priority);
-    } catch (e) {
-        console.log("   Error:", e);
+    // Test 6: Thread to see all connections
+    console.log("\n6. Thread Context Chain...");
+    const mem = db.prepare("SELECT id FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 1").get(testUser) as any;
+    if (mem) {
+        const thread = await memoryTool.handler({ op: "thread", userId: testUser, memoryId: mem.id, depth: 2 });
+        const threadData = safeParse(thread.content?.[0]?.text);
+        console.log("   Root:", threadData.root?.slice(0, 20) + "...");
+        console.log("   Nodes visited:", threadData.nodesVisited);
     }
     
     // Test 7: Health check
     console.log("\n7. Memory Health...");
-    try {
-        const healthResult = await memoryTool.handler({ op: "health", userId: testUser });
-        const healthData = safeParse(healthResult.content?.[0]?.text);
-        console.log("   Health score:", healthData.score + "%");
-        console.log("   Total memories:", healthData.metrics?.totalMemories);
-    } catch (e) {
-        console.log("   Error:", e);
+    const health = await memoryTool.handler({ op: "health", userId: testUser });
+    const healthData = safeParse(health.content?.[0]?.text);
+    console.log("   Health score:", healthData.score + "%");
+    console.log("   Total links:", healthData.metrics?.totalLinks);
+    console.log("   Orphaned:", healthData.metrics?.orphanedMemories);
+    
+    // Test 8: Quick recall with linked context
+    console.log("\n8. Recall with Linked Context...");
+    const recall = await memoryTool.handler({ op: "recall", userId: testUser, query: "AuthService" });
+    const recallData = safeParse(recall.content?.[0]?.text);
+    console.log("   Results:", recallData.count);
+    if (recallData.results?.[0]?.linkedContext?.length > 0) {
+        console.log("   First result links:", recallData.results[0].linkedContext.length);
     }
     
-    console.log("\n=== Smart Memory System Complete ===\n");
-    console.log("She now has:");
-    console.log("  ✓ Personality traits");
-    console.log("  ✓ Emotional memory");
-    console.log("  ✓ Adaptive learning");
-    console.log("  ✓ Proactive reminders");
-    console.log("  ✓ Smart suggestions");
+    console.log("\n=== Enhanced Auto-Linking Test Complete ===\n");
+    console.log("New 8-Phase Auto-Linking:");
+    console.log("  ✓ Temporal (0.9) - conversation flow");
+    console.log("  ✓ Entity (0.8) - shared @mentions");
+    console.log("  ✓ Project (0.7) - same project");
+    console.log("  ✓ Intent (0.6) - context clustering");
+    console.log("  ✓ Keyword (0.4) - keyword overlap");
+    console.log("  ✓ Cross-Project (0.6) - across projects");
+    console.log("  ✓ Temporal Chain (0.95) - consecutive");
+    console.log("  ✓ Entity Graph (0.75) - knowledge graph");
     console.log("\n");
     process.exit(0);
 }

@@ -345,9 +345,71 @@ export const memoryTool = {
                             }
                             if (autoLinks.length >= 15) break;
                         }
+                        
+                        // Phase 5: CROSS-PROJECT Linking (find related memories across projects - strength 0.6)
+                        const crossProject = db.prepare(`
+                            SELECT id, content, projectId FROM LongTermMemory 
+                            WHERE userId = ? AND id != ? AND projectId != ?
+                            AND (entities LIKE ? OR intent = ?)
+                            AND id NOT IN (SELECT memoryId2 FROM MemoryLinks WHERE memoryId1 = ?)
+                            ORDER BY priority DESC LIMIT 3
+                        `).all(userId, id, projectId || "default", `%${entities[0] || ""}%`, intent, id) as any[];
+                        
+                        for (const rel of crossProject) {
+                            if (autoLinks.length >= 15) break;
+                            createLink(rel.id, "cross_project", 0.6, rel.content);
+                        }
+                        
+                        // Phase 6: TEMPORAL CHAIN (build conversation chains - strength 0.95 for consecutive)
+                        const temporalChain = db.prepare(`
+                            SELECT id, content, createdAt FROM LongTermMemory 
+                            WHERE userId = ? AND id != ?
+                            AND createdAt > datetime('now', '-30 minutes')
+                            ORDER BY createdAt DESC LIMIT 5
+                        `).all(userId, id) as any[];
+                        
+                        for (const rel of temporalChain) {
+                            if (autoLinks.length >= 15) break;
+                            // Higher strength for very recent memories
+                            const minutesAgo = (Date.now() - new Date(rel.createdAt).getTime()) / 60000;
+                            const chainStrength = Math.max(0.5, 0.95 - (minutesAgo * 0.02));
+                            createLink(rel.id, "temporal_chain", chainStrength, rel.content);
+                        }
+                        
+                        // Phase 7: ENTITY GRAPH (build knowledge graph based on shared entities)
+                        const entityMentions = entities.slice(0, 2);
+                        for (const entity of entityMentions) {
+                            const sameEntity = db.prepare(`
+                                SELECT id, content, entities FROM LongTermMemory 
+                                WHERE userId = ? AND id != ? AND entities LIKE ?
+                                AND id NOT IN (SELECT memoryId2 FROM MemoryLinks WHERE memoryId1 = ?)
+                                ORDER BY createdAt DESC LIMIT 2
+                            `).all(userId, id, `%${entity}%`, id) as any[];
+                            
+                            for (const rel of sameEntity) {
+                                if (autoLinks.length >= 15) break;
+                                createLink(rel.id, "entity_graph", 0.75, rel.content);
+                            }
+                        }
+                    } else {
+                        // No entities - try temporal and project linking only
+                        // Phase 0 & 6 already handled above
+                        
+                        // Recent memories without entity match
+                        const recentNoEntity = db.prepare(`
+                            SELECT id, content FROM LongTermMemory 
+                            WHERE userId = ? AND id != ? AND createdAt > datetime('now', '-1 hour')
+                            AND id NOT IN (SELECT memoryId2 FROM MemoryLinks WHERE memoryId1 = ?)
+                            ORDER BY createdAt DESC LIMIT 3
+                        `).all(userId, id, id) as any[];
+                        
+                        for (const rel of recentNoEntity) {
+                            if (autoLinks.length >= 10) break;
+                            createLink(rel.id, "recent_context", 0.5, rel.content);
+                        }
                     }
                     
-                    // Phase 5: Adaptive Boost - If this memory has high priority, boost related memories
+                    // Phase 8: ADAPTIVE BOOST - If this memory has high priority, boost related memories
                     if (priority >= 0.7) {
                         const linkedIds = autoLinks.map(l => l.id);
                         if (linkedIds.length > 0) {
@@ -366,6 +428,12 @@ export const memoryTool = {
                         GROUP BY intent ORDER BY c DESC LIMIT 3
                     `).all(userId) as any[];
                     
+                    // Count links by type
+                    const linkTypes: Record<string, number> = {};
+                    autoLinks.forEach(l => {
+                        linkTypes[l.type] = (linkTypes[l.type] || 0) + 1;
+                    });
+                    
                     return { content: [{ type: "text", text: JSON.stringify({
                         success: true,
                         id,
@@ -375,6 +443,7 @@ export const memoryTool = {
                         summarized: needsSummarization,
                         summaryLength: summary.length,
                         autoLinked: autoLinks.length,
+                        linkTypes,
                         relatedMemories: autoLinks.map(l => ({ id: l.id.slice(0, 15) + "...", type: l.type, strength: l.strength })),
                         recentPatterns: recentIntents.map(i => i.intent)
                     }) }] };

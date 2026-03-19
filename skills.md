@@ -66,14 +66,24 @@ Each tool has an `op` parameter to specify the operation.
 
 ## Smart Memory Features
 
-### 1. 5-Phase Auto-Linking
+### 1. 8-Phase Auto-Linking (MOST POWERFUL)
 | Phase | Method | Strength | Description |
 |-------|--------|----------|-------------|
-| 0 | Temporal | 0.9 | Conversation flow |
-| 1 | Entity | 0.8 | Shared entities |
-| 2 | Project | 0.7 | Same project |
-| 3 | Intent | 0.6 | Context clustering |
-| 4 | Keyword | 0.4 | Keyword overlap |
+| 0 | Temporal | 0.9 | Conversation flow (most recent) |
+| 1 | Entity | 0.8 | Shared @mentions, CamelCase |
+| 2 | Project | 0.7 | Same project context |
+| 3 | Intent | 0.6 | Same intent + shared entity |
+| 4 | Keyword | 0.4 | Content keyword overlap |
+| 5 | **Cross-Project** | 0.6 | Related across projects |
+| 6 | **Temporal Chain** | 0.95 | Conversation within 30min |
+| 7 | **Entity Graph** | 0.75 | Knowledge graph from entities |
+
+**Features:**
+- Bidirectional links (both directions)
+- Max 15 links per memory
+- Adaptive boost (+5% for high-priority memories)
+- Temporal decay (older = slightly lower strength)
+- Returns `linkTypes` breakdown
 
 ### 2. Intent Detection
 | Intent | Priority | Examples |
