@@ -2,7 +2,7 @@
 // ROBUST MEMORY TOOL
 // Features: Auto-extract, intent detection, query expansion, smart defaults
 // =============================================
-import { db, dbConfig } from "../db/sqlite.js";
+import { db, dbConfig, searchEmbeddings } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 
 // Intent detection patterns
@@ -163,6 +163,11 @@ export const memoryTool = {
 | learn | Adaptive learning patterns |
 | remind | Proactive memory reminders |
 | suggest | Get smart suggestions |
+| graph | Knowledge graph visualization data |
+| dedup | Find and merge duplicate memories |
+| backup | Backup memories to JSON |
+| restore | Restore memories from JSON |
+| importance | Memory importance scoring |
 
 **Smart Features:**
 - **8-phase auto-linking** (bidirectional)
@@ -184,7 +189,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -653,56 +658,42 @@ export const memoryTool = {
                     if (!query) return { content: [{ type: "text", text: "query required" }], isError: true };
                     
                     // Check if vector search is available
-                    const hasVector = dbConfig?.vectorBackend !== 'none';
+                    const hasVector = dbConfig?.useVectorSearch && process.env.EMBEDDING_URL;
                     
-                    if (hasVector) {
-                        // Use vector search via sqlite-vss or sqlite-vec
-                        try {
-                            const tableName = dbConfig?.vectorBackend === 'vss' ? 'vss_doc' : 'vec_doc';
-                            let sql: string;
+                    // First, try to get vector results from Embeddings table
+                    const vectorResults = await searchEmbeddings(userId, query, "LongTermMemory", limit);
+                    
+                    if (vectorResults && vectorResults.length > 0) {
+                        // Merge with memory data
+                        const memoryIds = vectorResults.map((r: any) => r.refId);
+                        if (memoryIds.length > 0) {
+                            const placeholders = memoryIds.map(() => '?').join(',');
+                            const memories = db.prepare(`
+                                SELECT * FROM LongTermMemory WHERE id IN (${placeholders})
+                            `).all(...memoryIds) as any[];
                             
-                            if (dbConfig?.vectorBackend === 'vss') {
-                                sql = `
-                                    SELECT m.*, v.distance 
-                                    FROM ${tableName} v 
-                                    JOIN LongTermMemory m ON v.rowid = m.rowid
-                                    WHERE m.userId = ?
-                                    AND vss_search(v.embedding, vss_search_params(?, ?))
-                                    LIMIT ?
-                                `;
-                            } else {
-                                sql = `
-                                    SELECT m.*, v.distance as score
-                                    FROM ${tableName} v 
-                                    JOIN LongTermMemory m ON v.rowid = m.rowid
-                                    WHERE m.userId = ?
-                                    ORDER BY v.embedding <=> ? 
-                                    LIMIT ?
-                                `;
-                            }
-                            
-                            const results = db.prepare(sql).all(userId, query, 0.5, limit) as any[];
+                            const memMap = new Map(memories.map((m: any) => [m.id, m]));
                             
                             return { content: [{ type: "text", text: JSON.stringify({
                                 query,
                                 type: "semantic",
-                                engine: dbConfig?.vectorBackend,
-                                count: results.length,
-                                results: results.map(r => ({
-                                    id: r.id,
-                                    content: r.content?.slice(0, 100),
-                                    distance: r.distance || r.score,
-                                    intent: r.intent,
-                                    entities: JSON.parse(r.entities || "[]")
-                                }))
+                                engine: dbConfig?.vectorBackend || "embeddings",
+                                count: vectorResults.length,
+                                results: vectorResults.map((r: any) => {
+                                    const mem = memMap.get(r.refId);
+                                    return {
+                                        id: r.refId,
+                                        content: mem?.content?.slice(0, 100) || r.content?.slice(0, 100),
+                                        distance: r.distance,
+                                        intent: mem?.intent,
+                                        entities: mem ? JSON.parse(mem.entities || "[]") : []
+                                    };
+                                })
                             }) }] };
-                        } catch (e: any) {
-                            // Fallback to keyword if vector fails
-                            console.error("Vector search failed:", e.message);
                         }
                     }
                     
-                    // Fallback to enhanced keyword search
+                    // Fallback to enhanced keyword search with query expansion
                     const expanded = expandQuery(query);
                     const results: any[] = [];
                     
@@ -710,10 +701,10 @@ export const memoryTool = {
                         const found = db.prepare(`
                             SELECT *, content || ' ' || response as full_text
                             FROM LongTermMemory 
-                            WHERE userId = ? AND (content LIKE ? OR summary LIKE ?)
+                            WHERE userId = ? AND (content LIKE ? OR summary LIKE ? OR response LIKE ?)
                             ORDER BY priority DESC
                             LIMIT ?
-                        `).all(userId, `%${q}%`, `%${q}%`, limit) as any[];
+                        `).all(userId, `%${q}%`, `%${q}%`, `%${q}%`, limit) as any[];
                         
                         found.forEach(f => {
                             if (!results.find(r => r.id === f.id)) {
@@ -728,13 +719,15 @@ export const memoryTool = {
                     return { content: [{ type: "text", text: JSON.stringify({
                         query,
                         type: "semantic_fallback",
-                        engine: "keyword",
+                        engine: hasVector ? "vector_no_results" : "keyword_expanded",
+                        embeddingConfigured: !!process.env.EMBEDDING_URL,
                         count: results.length,
                         results: results.slice(0, limit).map(r => ({
                             id: r.id,
                             content: r.content?.slice(0, 100),
                             score: r.score,
-                            intent: r.intent
+                            intent: r.intent,
+                            entities: JSON.parse(r.entities || "[]")
                         }))
                     }) }] };
                 }
@@ -1645,6 +1638,400 @@ export const memoryTool = {
                             highPriorityMemories: highPriority.length
                         }
                     }) }] };
+                }
+                
+                // =============================================
+                // GRAPH: Knowledge graph visualization data
+                // Export memory network as nodes and edges
+                // =============================================
+                case "graph": {
+                    const { depth = 2, focusMemoryId } = args;
+                    
+                    // Get all memories for this user
+                    const memories = db.prepare(`
+                        SELECT id, content, intent, entities, priority, createdAt 
+                        FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 100
+                    `).all(userId) as any[];
+                    
+                    // Get all links
+                    const memoryIds = memories.map((m: any) => m.id);
+                    let links: any[] = [];
+                    
+                    if (memoryIds.length > 0) {
+                        const placeholders = memoryIds.map(() => '?').join(',');
+                        links = db.prepare(`
+                            SELECT memoryId1, memoryId2, relationship, strength 
+                            FROM MemoryLinks 
+                            WHERE memoryId1 IN (${placeholders}) OR memoryId2 IN (${placeholders})
+                        `).all(...memoryIds, ...memoryIds) as any[];
+                    }
+                    
+                    // Build entity frequency map
+                    const entityMap: Record<string, string[]> = {};
+                    memories.forEach((m: any) => {
+                        const entities = JSON.parse(m.entities || "[]");
+                        entities.forEach((e: string) => {
+                            if (!entityMap[e]) entityMap[e] = [];
+                            entityMap[e].push(m.id);
+                        });
+                    });
+                    
+                    // Format as nodes and edges for graph visualization
+                    const nodes = memories.map((m: any) => ({
+                        id: m.id,
+                        label: m.content?.slice(0, 50) || "",
+                        intent: m.intent,
+                        priority: m.priority,
+                        entities: JSON.parse(m.entities || "[]"),
+                        created: m.createdAt
+                    }));
+                    
+                    const edges = links.map((l: any) => ({
+                        source: l.memoryId1,
+                        target: l.memoryId2,
+                        type: l.relationship,
+                        strength: l.strength
+                    }));
+                    
+                    // Find clusters (memories sharing entities)
+                    const clusters = Object.entries(entityMap)
+                        .filter(([_, ids]) => ids.length > 1)
+                        .map(([entity, ids]) => ({ entity, memories: ids.length }));
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        stats: {
+                            totalMemories: memories.length,
+                            totalLinks: links.length,
+                            totalEntities: Object.keys(entityMap).length,
+                            clusters: clusters.length
+                        },
+                        nodes,
+                        edges,
+                        clusters: clusters.slice(0, 10),
+                        entityMap
+                    }) }] };
+                }
+                
+                // =============================================
+                // DEDUP: Find and merge duplicate memories
+                // =============================================
+                case "dedup": {
+                    const { threshold = 0.8, autoMerge = false } = args;
+                    
+                    // Find potential duplicates based on content similarity
+                    const memories = db.prepare(`
+                        SELECT id, content, entities, intent, priority 
+                        FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 50
+                    `).all(userId) as any[];
+                    
+                    const duplicates: { original: any; duplicate: any; similarity: number }[] = [];
+                    
+                    for (let i = 0; i < memories.length; i++) {
+                        for (let j = i + 1; j < Math.min(i + 10, memories.length); j++) {
+                            const m1 = memories[i];
+                            const m2 = memories[j];
+                            
+                            // Calculate simple similarity
+                            const words1 = new Set((m1.content || "").toLowerCase().split(/\s+/));
+                            const words2 = new Set((m2.content || "").toLowerCase().split(/\s+/));
+                            const intersection = new Set([...words1].filter(x => words2.has(x)));
+                            const union = new Set([...words1, ...words2]);
+                            const similarity = intersection.size / union.size;
+                            
+                            if (similarity >= threshold) {
+                                duplicates.push({
+                                    original: { id: m1.id, content: m1.content?.slice(0, 50) },
+                                    duplicate: { id: m2.id, content: m2.content?.slice(0, 50) },
+                                    similarity: Math.round(similarity * 100) / 100
+                                });
+                            }
+                        }
+                    }
+                    
+                    let merged = 0;
+                    if (autoMerge && duplicates.length > 0) {
+                        // Merge duplicates - keep higher priority, update links
+                        for (const dup of duplicates) {
+                            const orig = db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(dup.original.id) as any;
+                            const dupe = db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(dup.duplicate.id) as any;
+                            
+                            if (orig && dupe) {
+                                // Update links from duplicate to original
+                                db.prepare(`
+                                    UPDATE MemoryLinks SET memoryId2 = ? WHERE memoryId2 = ?
+                                `).run(orig.id, dupe.id);
+                                
+                                // Merge entities
+                                const origEnts = JSON.parse(orig.entities || "[]");
+                                const dupeEnts = JSON.parse(dupe.entities || "[]");
+                                const mergedEnts = [...new Set([...origEnts, ...dupeEnts])];
+                                
+                                db.prepare(`UPDATE LongTermMemory SET entities = ?, priority = MAX(?, ?) WHERE id = ?`)
+                                    .run(JSON.stringify(mergedEnts), orig.priority, dupe.priority, orig.id);
+                                
+                                // Delete duplicate
+                                db.prepare(`DELETE FROM LongTermMemory WHERE id = ?`).run(dupe.id);
+                                merged++;
+                            }
+                        }
+                    }
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        found: duplicates.length,
+                        merged: autoMerge ? merged : "skipped",
+                        autoMerge,
+                        threshold,
+                        duplicates: duplicates.slice(0, 10)
+                    }) }] };
+                }
+                
+                // =============================================
+                // BACKUP: Export memories to JSON
+                // =============================================
+                case "backup": {
+                    const { includeLinks = true, includePersona = true, includeMood = true } = args;
+                    
+                    const backup: any = {
+                        version: "1.0",
+                        timestamp: new Date().toISOString(),
+                        userId
+                    };
+                    
+                    // Backup memories
+                    const memories = db.prepare(`
+                        SELECT * FROM LongTermMemory WHERE userId = ?
+                    `).all(userId) as any[];
+                    backup.memories = memories;
+                    
+                    // Backup links
+                    if (includeLinks) {
+                        const memoryIds = memories.map((m: any) => m.id);
+                        if (memoryIds.length > 0) {
+                            const placeholders = memoryIds.map(() => '?').join(',');
+                            backup.links = db.prepare(`
+                                SELECT * FROM MemoryLinks WHERE memoryId1 IN (${placeholders})
+                            `).all(...memoryIds) as any[];
+                        }
+                    }
+                    
+                    // Backup persona
+                    if (includePersona) {
+                        backup.persona = db.prepare(`SELECT * FROM UserPersona WHERE userId = ?`).get(userId);
+                    }
+                    
+                    // Backup mood history
+                    if (includeMood) {
+                        backup.emotions = db.prepare(`
+                            SELECT * FROM EmotionalMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 100
+                        `).all(userId) as any[];
+                    }
+                    
+                    // Backup reminders
+                    backup.reminders = db.prepare(`
+                        SELECT * FROM MemoryReminders WHERE userId = ? AND status = 'pending'
+                    `).all(userId) as any[];
+                    
+                    // Backup learning
+                    backup.learning = db.prepare(`
+                        SELECT * FROM LearningLog WHERE userId = ?
+                    `).all(userId) as any[];
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        backupSize: JSON.stringify(backup).length,
+                        stats: {
+                            memories: backup.memories?.length || 0,
+                            links: backup.links?.length || 0,
+                            emotions: backup.emotions?.length || 0,
+                            reminders: backup.reminders?.length || 0,
+                            learning: backup.learning?.length || 0
+                        },
+                        download: Buffer.from(JSON.stringify(backup, null, 2)).toString('base64')
+                    }) }] };
+                }
+                
+                // =============================================
+                // RESTORE: Import memories from JSON backup
+                // =============================================
+                case "restore": {
+                    const { backupData, merge = true } = args;
+                    
+                    if (!backupData) {
+                        return { content: [{ type: "text", text: "backupData required" }], isError: true };
+                    }
+                    
+                    let backup: any;
+                    try {
+                        // Try base64 first, then JSON
+                        try {
+                            backup = JSON.parse(Buffer.from(backupData, 'base64').toString());
+                        } catch {
+                            backup = JSON.parse(backupData);
+                        }
+                    } catch {
+                        return { content: [{ type: "text", text: "Invalid backup data format" }], isError: true };
+                    }
+                    
+                    let restored = { memories: 0, links: 0, emotions: 0, reminders: 0, learning: 0, skipped: 0 };
+                    
+                    // Restore memories
+                    if (backup.memories) {
+                        for (const mem of backup.memories) {
+                            const existing = db.prepare(`SELECT id FROM LongTermMemory WHERE id = ?`).get(mem.id);
+                            if (existing && merge) {
+                                restored.skipped++;
+                                continue;
+                            }
+                            db.prepare(`
+                                INSERT OR REPLACE INTO LongTermMemory 
+                                (id, userId, projectId, content, summary, response, intent, entities, priority, createdAt)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            `).run(
+                                mem.id, userId, mem.projectId, mem.content, mem.summary, mem.response,
+                                mem.intent, mem.entities, mem.priority, mem.createdAt
+                            );
+                            restored.memories++;
+                        }
+                    }
+                    
+                    // Restore links
+                    if (backup.links) {
+                        for (const link of backup.links) {
+                            db.prepare(`
+                                INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            `).run(link.id, link.memoryId1, link.memoryId2, link.relationship, link.strength, link.createdAt);
+                            restored.links++;
+                        }
+                    }
+                    
+                    // Restore emotions
+                    if (backup.emotions) {
+                        for (const emotion of backup.emotions) {
+                            db.prepare(`
+                                INSERT OR IGNORE INTO EmotionalMemory 
+                                (id, userId, mood, intensity, context, createdAt)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            `).run(emotion.id, userId, emotion.mood, emotion.intensity, emotion.context, emotion.createdAt);
+                            restored.emotions++;
+                        }
+                    }
+                    
+                    // Restore reminders
+                    if (backup.reminders) {
+                        for (const reminder of backup.reminders) {
+                            db.prepare(`
+                                INSERT OR IGNORE INTO MemoryReminders 
+                                (id, userId, memoryId, reminderType, title, description, priority, createdAt)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            `).run(reminder.id, userId, reminder.memoryId, reminder.reminderType, reminder.title, reminder.description, reminder.priority, reminder.createdAt);
+                            restored.reminders++;
+                        }
+                    }
+                    
+                    // Restore learning
+                    if (backup.learning) {
+                        for (const learn of backup.learning) {
+                            db.prepare(`
+                                INSERT OR IGNORE INTO LearningLog 
+                                (id, userId, type, pattern, data, confidence, usageCount, createdAt)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            `).run(learn.id, userId, learn.type, learn.pattern, learn.data, learn.confidence, learn.usageCount, learn.createdAt);
+                            restored.learning++;
+                        }
+                    }
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        restored,
+                        mergeMode: merge
+                    }) }] };
+                }
+                
+                // =============================================
+                // IMPORTANCE: Calculate memory importance score
+                // Based on: access count, links, priority, recency
+                // =============================================
+                case "importance": {
+                    const { memoryId } = args;
+                    
+                    if (memoryId) {
+                        // Score single memory
+                        const mem = db.prepare(`
+                            SELECT * FROM LongTermMemory WHERE id = ? AND userId = ?
+                        `).get(memoryId, userId) as any;
+                        
+                        if (!mem) return { content: [{ type: "text", text: "Memory not found" }], isError: true };
+                        
+                        // Calculate importance
+                        const linkCount = db.prepare(`
+                            SELECT COUNT(*) as c FROM MemoryLinks WHERE memoryId1 = ? OR memoryId2 = ?
+                        `).get(memoryId, memoryId) as any;
+                        
+                        const daysSinceCreated = (Date.now() - new Date(mem.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+                        const daysSinceAccessed = mem.lastAccessedAt 
+                            ? (Date.now() - new Date(mem.lastAccessedAt).getTime()) / (1000 * 60 * 60 * 24)
+                            : daysSinceCreated;
+                        
+                        // Importance formula
+                        const accessScore = Math.min(1, mem.accessCount / 10);
+                        const linkScore = Math.min(1, (linkCount?.c || 0) / 5);
+                        const priorityScore = mem.priority;
+                        const recencyScore = Math.max(0, 1 - (daysSinceAccessed / 30));
+                        const intentBonus = ["error", "learning", "success"].includes(mem.intent) ? 0.1 : 0;
+                        
+                        const importance = Math.round((accessScore * 0.25 + linkScore * 0.25 + priorityScore * 0.25 + recencyScore * 0.2 + intentBonus) * 100);
+                        
+                        return { content: [{ type: "text", text: JSON.stringify({
+                            memoryId,
+                            importance,
+                            rating: importance >= 80 ? "critical" : importance >= 60 ? "important" : importance >= 40 ? "normal" : "low",
+                            breakdown: {
+                                accessScore: Math.round(accessScore * 100),
+                                linkScore: Math.round(linkScore * 100),
+                                priorityScore: Math.round(priorityScore * 100),
+                                recencyScore: Math.round(recencyScore * 100),
+                                intentBonus: Math.round(intentBonus * 100)
+                            },
+                            metrics: {
+                                accessCount: mem.accessCount,
+                                linkCount: linkCount?.c || 0,
+                                daysSinceCreated: Math.round(daysSinceCreated),
+                                daysSinceAccessed: Math.round(daysSinceAccessed)
+                            }
+                        }) }] };
+                    } else {
+                        // Score all memories and return ranking
+                        const memories = db.prepare(`
+                            SELECT id, content, intent, priority, accessCount, createdAt, lastAccessedAt
+                            FROM LongTermMemory WHERE userId = ?
+                        `).all(userId) as any[];
+                        
+                        const scored = memories.map((mem: any) => {
+                            const daysSinceCreated = (Date.now() - new Date(mem.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+                            const daysSinceAccessed = mem.lastAccessedAt 
+                                ? (Date.now() - new Date(mem.lastAccessedAt).getTime()) / (1000 * 60 * 60 * 24)
+                                : daysSinceCreated;
+                            
+                            const accessScore = Math.min(1, mem.accessCount / 10);
+                            const priorityScore = mem.priority;
+                            const recencyScore = Math.max(0, 1 - (daysSinceAccessed / 30));
+                            const intentBonus = ["error", "learning", "success"].includes(mem.intent) ? 0.1 : 0;
+                            
+                            const importance = Math.round((accessScore * 0.3 + priorityScore * 0.3 + recencyScore * 0.3 + intentBonus) * 100);
+                            
+                            return { id: mem.id, content: mem.content?.slice(0, 50), importance, intent: mem.intent };
+                        });
+                        
+                        scored.sort((a: any, b: any) => b.importance - a.importance);
+                        
+                        return { content: [{ type: "text", text: JSON.stringify({
+                            total: scored.length,
+                            critical: scored.filter((m: any) => m.importance >= 80).length,
+                            important: scored.filter((m: any) => m.importance >= 60 && m.importance < 80).length,
+                            normal: scored.filter((m: any) => m.importance >= 40 && m.importance < 60).length,
+                            low: scored.filter((m: any) => m.importance < 40).length,
+                            top10: scored.slice(0, 10)
+                        }) }] };
+                    }
                 }
                 
                 default:

@@ -350,6 +350,62 @@ async function test() {
         return data.engine !== undefined;
     });
     
+    console.log("\n--- NEW FEATURES ---");
+    
+    await test("33. Graph visualization data works", async () => {
+        const r = await memoryTool.handler({
+            op: "graph",
+            userId: testUser
+        });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.nodes !== undefined && data.edges !== undefined;
+    });
+    
+    await test("34. Dedup finds duplicates", async () => {
+        const r = await memoryTool.handler({
+            op: "dedup",
+            userId: testUser
+        });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.found !== undefined;
+    });
+    
+    await test("35. Backup creates export", async () => {
+        const r = await memoryTool.handler({
+            op: "backup",
+            userId: testUser
+        });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.backupSize > 0 && data.stats !== undefined;
+    });
+    
+    await test("36. Importance scoring works", async () => {
+        const r = await memoryTool.handler({
+            op: "importance",
+            userId: testUser
+        });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.total !== undefined;
+    });
+    
+    await test("37. Health has graph stats", async () => {
+        const r = await memoryTool.handler({ op: "health", userId: testUser });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.metrics?.totalLinks > 0;
+    });
+    
+    await test("38. Mood tracking affects suggestions", async () => {
+        await memoryTool.handler({
+            op: "mood",
+            userId: testUser,
+            mood: "excited",
+            intensity: 8
+        });
+        const r = await memoryTool.handler({ op: "suggest", userId: testUser });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.suggestions?.some((s: any) => s.type === "energy");
+    });
+    
     console.log("\n=== TEST RESULTS ===");
     console.log(`✅ Passed: ${passed}/30`);
     console.log(`❌ Failed: ${failed}/30`);

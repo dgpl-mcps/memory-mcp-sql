@@ -60,7 +60,44 @@ Each tool has an `op` parameter to specify the operation.
 | mood | Track emotional state | mood, intensity, context |
 | learn | Adaptive learning patterns | type, pattern |
 | remind | Proactive memory reminders | reminderType, title |
-| suggest | Get smart suggestions | - |
+| suggest | Get smart suggestions |
+| graph | Knowledge graph visualization |
+| dedup | Find & merge duplicate memories |
+| backup | Export memories to JSON |
+| restore | Import memories from backup |
+| importance | Memory importance scoring |
+
+---
+
+## Advanced Memory Operations
+
+### Graph Visualization
+```json
+{ "op": "graph", "userId": "u1" }
+```
+Returns: nodes, edges, clusters, entityMap
+
+### Memory Deduplication
+```json
+{ "op": "dedup", "userId": "u1", "threshold": 0.8, "autoMerge": false }
+```
+Finds similar memories and optionally merges them
+
+### Backup & Restore
+```json
+{ "op": "backup", "userId": "u1", "includeLinks": true }
+{ "op": "restore", "userId": "u1", "backupData": "...", "merge": true }
+```
+Full memory export/import with base64 encoding
+
+### Importance Scoring
+```json
+{ "op": "importance", "userId": "u1" }
+// Returns: all memories ranked by importance
+{ "op": "importance", "userId": "u1", "memoryId": "mem_123" }
+// Returns: single memory with breakdown
+```
+Importance = access(30%) + priority(30%) + recency(30%) + intent_bonus(10%) - |
 
 ---
 
