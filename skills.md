@@ -53,12 +53,25 @@ Each tool has an `op` parameter to specify the operation.
 | recent | Get recent memories | hours, limit |
 | search | Semantic search | query |
 | thread | Full context chain | memoryId, depth |
+| health | Memory health check | - |
+| decay | Decay unused memories | daysUnused, decayRate |
 
-**NEW: Thread Operation** - Get a memory with its entire linked context chain:
+**Thread Operation** - Get a memory with its entire linked context chain:
 ```json
 { "op": "thread", "userId": "u1", "memoryId": "mem_123", "depth": 2 }
 ```
-Returns: memory + linked memories + children's linked memories recursively
+
+**Health Operation** - Check memory system health:
+```json
+{ "op": "health", "userId": "u1" }
+// Returns: score, metrics, suggestions
+```
+
+**Decay Operation** - Smart forgetting:
+```json
+{ "op": "decay", "userId": "u1", "daysUnused": 7, "decayRate": 0.05 }
+// Decays unused memories, boosts frequently accessed
+```
 
 **Examples:**
 ```json

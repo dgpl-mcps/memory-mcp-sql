@@ -155,6 +155,8 @@ export const memoryTool = {
 | recent | Get recent memories |
 | search | Semantic search |
 | thread | Get memory with full linked context chain |
+| health | Memory health & optimization suggestions |
+| decay | Decay unused memories |
 
 **Examples:**
 \`\`\`json
@@ -165,7 +167,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "thread"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "thread", "health", "decay"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -334,6 +336,13 @@ export const memoryTool = {
                         }
                     }
                     
+                    // Track memory patterns for learning
+                    const recentIntents = db.prepare(`
+                        SELECT intent, COUNT(*) as c FROM LongTermMemory 
+                        WHERE userId = ? AND createdAt > datetime('now', '-24 hours')
+                        GROUP BY intent ORDER BY c DESC LIMIT 3
+                    `).all(userId) as any[];
+                    
                     return { content: [{ type: "text", text: JSON.stringify({
                         success: true,
                         id,
@@ -343,7 +352,8 @@ export const memoryTool = {
                         summarized: needsSummarization,
                         summaryLength: summary.length,
                         autoLinked: autoLinks.length,
-                        relatedMemories: autoLinks.map(l => ({ id: l.id.slice(0, 15) + "...", type: l.type, strength: l.strength }))
+                        relatedMemories: autoLinks.map(l => ({ id: l.id.slice(0, 15) + "...", type: l.type, strength: l.strength })),
+                        recentPatterns: recentIntents.map(i => i.intent)
                     }) }] };
                 }
                 
@@ -608,6 +618,74 @@ export const memoryTool = {
                         depth: maxDepth,
                         nodesVisited: visited.size,
                         thread
+                    }) }] };
+                }
+                
+                // =============================================
+                // HEALTH: Memory health check & optimization
+                // =============================================
+                case "health": {
+                    // Gather health metrics
+                    const total = db.prepare(`SELECT COUNT(*) as c FROM LongTermMemory WHERE userId = ?`).get(userId) as any;
+                    const orphaned = db.prepare(`
+                        SELECT COUNT(*) as c FROM LongTermMemory m
+                        LEFT JOIN MemoryLinks l ON m.id = l.memoryId1 OR m.id = l.memoryId2
+                        WHERE m.userId = ? AND l.id IS NULL
+                    `).get(userId) as any;
+                    const lowPriority = db.prepare(`SELECT COUNT(*) as c FROM LongTermMemory WHERE userId = ? AND priority < 0.3`).get(userId) as any;
+                    const highAccess = db.prepare(`SELECT COUNT(*) as c FROM LongTermMemory WHERE userId = ? AND accessCount > 5`).get(userId) as any;
+                    const linkStats = db.prepare(`
+                        SELECT COUNT(*) as total, AVG(strength) as avgStrength,
+                               COUNT(DISTINCT memoryId1) as linkedFrom
+                        FROM MemoryLinks
+                    `).get() as any;
+                    const intentBreakdown = db.prepare(`
+                        SELECT intent, COUNT(*) as c FROM LongTermMemory 
+                        WHERE userId = ? GROUP BY intent ORDER BY c DESC
+                    `).all(userId) as any;
+                    const entityFreq = db.prepare(`
+                        SELECT entities FROM LongTermMemory WHERE userId = ?
+                    `).all(userId) as any[];
+                    
+                    // Count entity frequency
+                    const entityCounts: Record<string, number> = {};
+                    entityFreq.forEach((m: any) => {
+                        const ents = JSON.parse(m.entities || "[]");
+                        ents.forEach((e: string) => { entityCounts[e] = (entityCounts[e] || 0) + 1; });
+                    });
+                    const topEntities = Object.entries(entityCounts)
+                        .sort((a, b) => b[1] - a[1]).slice(0, 10)
+                        .map(([e, c]) => ({ entity: e, count: c }));
+                    
+                    // Calculate health score
+                    const linkScore = Math.min(100, (linkStats?.linkedFrom || 0) / Math.max(1, total?.c || 1) * 100);
+                    const priorityScore = 100 - (lowPriority?.c || 0) * 5;
+                    const connectionScore = 100 - (orphaned?.c || 0) * 10;
+                    const healthScore = Math.round((linkScore + priorityScore + connectionScore) / 3);
+                    
+                    // Generate suggestions
+                    const suggestions: string[] = [];
+                    if (orphaned?.c > total?.c * 0.3) suggestions.push("Many orphaned memories - consider linking related ones");
+                    if (lowPriority?.c > total?.c * 0.5) suggestions.push("Too many low-priority memories - boost important ones");
+                    if (!linkStats?.total) suggestions.push("No memory links yet - auto-linking should create them");
+                    if (healthScore < 50) suggestions.push("Memory health is poor - engage more with your memories");
+                    if (healthScore >= 80) suggestions.push("Memory system is healthy! Keep using it");
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        score: healthScore,
+                        status: healthScore >= 80 ? "healthy" : healthScore >= 50 ? "fair" : "needs attention",
+                        metrics: {
+                            totalMemories: total?.c || 0,
+                            totalLinks: linkStats?.total || 0,
+                            avgLinkStrength: linkStats?.avgStrength?.toFixed(2) || "N/A",
+                            orphanedMemories: orphaned?.c || 0,
+                            lowPriorityMemories: lowPriority?.c || 0,
+                            highAccessMemories: highAccess?.c || 0,
+                            memoriesWithLinks: linkStats?.linkedFrom || 0
+                        },
+                        topIntents: intentBreakdown.slice(0, 5).map((i: any) => ({ intent: i.intent, count: i.c })),
+                        topEntities,
+                        suggestions
                     }) }] };
                 }
                 
@@ -983,6 +1061,60 @@ export const memoryTool = {
                     `).run(id, memoryId1, memoryId2, relationship || "related", new Date().toISOString());
                     
                     return { content: [{ type: "text", text: `Linked ${memoryId1.slice(0, 12)}... → ${memoryId2.slice(0, 12)}... (${relationship || "related"})` }] };
+                }
+                
+                // =============================================
+                // DECAY: Decay unused memories, boost frequently accessed
+                // Smart forgetting for long-term memory optimization
+                // =============================================
+                case "decay": {
+                    const { daysUnused = 7, decayRate = 0.05 } = args;
+                    
+                    // Decay memories not accessed in N days
+                    const cutoff = new Date(Date.now() - daysUnused * 24 * 60 * 60 * 1000).toISOString();
+                    
+                    // Find memories to decay
+                    const toDecay = db.prepare(`
+                        SELECT id, priority, accessCount, lastAccessedAt FROM LongTermMemory 
+                        WHERE userId = ? AND lastAccessedAt < ? AND isPinned = 0
+                    `).all(userId, cutoff) as any[];
+                    
+                    // Decay them
+                    let decayed = 0;
+                    toDecay.forEach((m: any) => {
+                        if (m.priority > 0.1) {
+                            db.prepare(`
+                                UPDATE LongTermMemory SET priority = MAX(0.1, priority - ?) WHERE id = ?
+                            `).run(decayRate, m.id);
+                            decayed++;
+                        }
+                    });
+                    
+                    // Boost memories that are frequently accessed but have low priority
+                    const toBoost = db.prepare(`
+                        SELECT id, priority, accessCount FROM LongTermMemory 
+                        WHERE userId = ? AND accessCount > 3 AND priority < 0.6 AND isPinned = 0
+                    `).all(userId) as any[];
+                    
+                    let boosted = 0;
+                    toBoost.forEach((m: any) => {
+                        const boost = Math.min(0.2, m.accessCount * 0.02);
+                        db.prepare(`
+                            UPDATE LongTermMemory SET priority = MIN(1.0, priority + ?) WHERE id = ?
+                        `).run(boost, m.id);
+                        boosted++;
+                    });
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        action: "decay_completed",
+                        decayed,
+                        boosted,
+                        cutoff: `${daysUnused} days unused`,
+                        decayRate: `${decayRate * 100}%`,
+                        message: decayed > 0 
+                            ? `Decayed ${decayed} unused memories, boosted ${boosted} frequently accessed ones`
+                            : "Memory is well maintained - no decay needed"
+                    }) }] };
                 }
                 
                 default:
