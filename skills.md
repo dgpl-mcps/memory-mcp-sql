@@ -49,9 +49,16 @@ Each tool has an `op` parameter to specify the operation.
 | analytics | Session analytics | sessionId, days |
 | analytics | Session analytics | sessionId, days |
 | link | Link memories | memoryId1, memoryId2 |
-| all | Get all memories | limit |
+| all | Get everything (quick start) | limit |
 | recent | Get recent memories | hours, limit |
-| search | Semantic search | query, scope |
+| search | Semantic search | query |
+| thread | Full context chain | memoryId, depth |
+
+**NEW: Thread Operation** - Get a memory with its entire linked context chain:
+```json
+{ "op": "thread", "userId": "u1", "memoryId": "mem_123", "depth": 2 }
+```
+Returns: memory + linked memories + children's linked memories recursively
 
 **Examples:**
 ```json
@@ -310,16 +317,21 @@ For content >500 characters:
 - Full content always stored; summary for quick reference
 
 ### Auto-Linking (MOST POWERFUL FEATURE)
-Automatic memory relationship discovery with strength scoring:
+**5-Phase automatic memory relationship discovery:**
 | Phase | Method | Strength | Description |
 |-------|--------|----------|-------------|
-| 1 | Entity Match | 0.8 | Memories share extracted entities (@mention, CamelCase) |
-| 2 | Intent Cluster | 0.6 | Same intent (error/success) + shared entity + recent |
-| 3 | Keyword Match | 0.4 | Content/summary keyword overlap |
+| 0 | Temporal | 0.9 | Conversation flow (consecutive memories) |
+| 1 | Entity | 0.8 | Memories share @mention, CamelCase entities |
+| 2 | Project | 0.7 | Same project context |
+| 3 | Intent | 0.6 | Same intent + shared entity + recent |
+| 4 | Keyword | 0.4 | Content/summary keyword overlap |
 
-- Limited to 10 auto-links per memory to avoid noise
-- Returns `relatedMemories` array with linked memory IDs
-- Creates `MemoryLinks` table entries for graph traversal
+**Key Features:**
+- Bidirectional links (both directions)
+- Max 15 links per memory
+- Adaptive boost: High-priority memories boost linked memories by +5%
+- Returns `relatedMemories` with type and strength
+- `thread` operation retrieves full context chain recursively
 
 ---
 

@@ -16,7 +16,7 @@ async function test() {
     const testUser = "test_user_" + Date.now();
     const testProject = "test_project";
     
-    console.log("\n=== Testing Enhanced Memory System ===\n");
+    console.log("\n=== Testing Robust Memory System ===\n");
     
     // Test 1: Store multiple related memories
     console.log("1. Storing memory about AuthService bug...");
@@ -45,12 +45,12 @@ async function test() {
         userMessage: "Fixed both @AuthService and @Database issues",
         agentMessage: "Great! What was the root cause?"
     });
-    console.log("   Result:", JSON.stringify(JSON.parse(result3.content[0].text), null, 2));
+    console.log("   Result:", result3.content?.[0]?.text || result3);
     
     // Check links created
     const links = db.prepare("SELECT * FROM MemoryLinks").all();
     console.log("\n4. Memory Links Created:", links.length);
-    links.forEach((l: any) => {
+    links.slice(0, 5).forEach((l: any) => {
         console.log(`   - ${l.memoryId1.slice(0,15)}... → ${l.memoryId2.slice(0,15)}... (${l.relationship}, strength: ${l.strength})`);
     });
     
@@ -77,38 +77,56 @@ async function test() {
     
     // Check stats
     const stats = await memoryTool.handler({ op: "stats", userId: testUser });
-    console.log("   Stats:", JSON.parse(stats.content[0].text));
+    const statsText = stats.content?.[0]?.text;
+    console.log("   Stats:", statsText ? JSON.parse(statsText) : stats);
     
-    // Test 5: Entity extraction
-    console.log("\n6. Testing entity extraction...");
-    await memoryTool.handler({
-        op: "remember",
+    // Test 5: Recall with linked context
+    console.log("\n6. Testing recall with linked context...");
+    const recall = await memoryTool.handler({
+        op: "recall",
         userId: testUser,
-        projectId: testProject,
-        userMessage: "Mentioned @JohnDoe and @JaneSmith in #meeting about /src/api/handlers.ts - see https://example.com"
+        query: "bug"
     });
+    const recallData = JSON.parse(recall.content?.[0]?.text);
+    console.log("   Found:", recallData?.count, "results");
+    if (recallData?.results?.[0]?.linkedContext) {
+        console.log("   First result has linked context:", recallData.results[0].linkedContext.length, "links");
+    }
     
-    const lastMem = db.prepare("SELECT entities FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 1").get(testUser) as any;
-    console.log("   Extracted entities:", lastMem?.entities);
+    // Test 6: Thread operation - get full context chain
+    console.log("\n7. Testing thread (full context chain)...");
+    const memories = db.prepare("SELECT id FROM LongTermMemory WHERE userId = ? ORDER BY createdAt DESC LIMIT 1").get(testUser) as any;
+    if (memories) {
+        const thread = await memoryTool.handler({
+            op: "thread",
+            userId: testUser,
+            memoryId: memories.id,
+            depth: 2
+        });
+        const threadData = JSON.parse(thread.content?.[0]?.text);
+        console.log("   Thread root:", threadData?.root);
+        console.log("   Nodes visited:", threadData?.nodesVisited);
+        console.log("   Has children:", threadData?.thread?.[0]?.children?.length > 0);
+    }
     
-    // Test 6: Query expansion
-    console.log("\n7. Testing query expansion...");
+    // Test 7: Query expansion
+    console.log("\n8. Testing query expansion...");
     const recallResult = await memoryTool.handler({
         op: "recall",
         userId: testUser,
         query: "bug fix"
     });
-    const recall = JSON.parse(recallResult.content[0].text);
-    console.log("   Query 'bug fix' found:", recall.count, "results");
+    const recall2 = JSON.parse(recallResult.content?.[0]?.text);
+    console.log("   Query 'bug fix' found:", recall2?.count, "results");
     
-    // Test 7: Auto-linking strength
-    console.log("\n8. Testing auto-link strength scores...");
-    const strongLinks = links.filter((l: any) => l.strength >= 0.7);
-    const mediumLinks = links.filter((l: any) => l.strength >= 0.4 && l.strength < 0.7);
-    const weakLinks = links.filter((l: any) => l.strength < 0.4);
-    console.log("   Strong (entity match):", strongLinks.length);
-    console.log("   Medium (intent cluster):", mediumLinks.length);
-    console.log("   Weak (keyword match):", weakLinks.length);
+    // Test 8: Memory health
+    console.log("\n9. Memory health check...");
+    const totalLinks = db.prepare("SELECT COUNT(*) as c FROM MemoryLinks").get() as any;
+    const avgStrength = db.prepare("SELECT AVG(strength) as avg FROM MemoryLinks").get() as any;
+    const bidirectional = db.prepare("SELECT COUNT(*) as c FROM MemoryLinks WHERE relationship LIKE '%_reverse'").get() as any;
+    console.log("   Total links:", totalLinks?.c);
+    console.log("   Average strength:", avgStrength?.avg?.toFixed(2));
+    console.log("   Bidirectional links:", bidirectional?.c);
     
     console.log("\n=== All Tests Complete ===\n");
     process.exit(0);

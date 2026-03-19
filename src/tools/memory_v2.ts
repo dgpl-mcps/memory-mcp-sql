@@ -154,6 +154,7 @@ export const memoryTool = {
 | all | Get everything (quick start) |
 | recent | Get recent memories |
 | search | Semantic search |
+| thread | Get memory with full linked context chain |
 
 **Examples:**
 \`\`\`json
@@ -164,7 +165,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "thread"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -231,11 +232,39 @@ export const memoryTool = {
                         priority, new Date().toISOString()
                     );
                     
-                    // Auto-link to related memories (POWERFUL FEATURE)
-                    interface AutoLink { id: string; type: string; content: string; }
+                    // Auto-link to related memories (ROBUST 5-PHASE SYSTEM)
+                    interface AutoLink { id: string; type: string; content: string; strength: number; }
                     const autoLinks: AutoLink[] = [];
+                    
+                    // Helper to create link and track
+                    const createLink = (targetId: string, relType: string, strength: number, content?: string) => {
+                        if (autoLinks.find(l => l.id === targetId)) return;
+                        const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
+                        db.prepare(`
+                            INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        `).run(linkId, id, targetId, relType, strength, new Date().toISOString());
+                        // Bidirectional: also link back
+                        const revLinkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
+                        db.prepare(`
+                            INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        `).run(revLinkId, targetId, id, relType + "_reverse", strength, new Date().toISOString());
+                        autoLinks.push({ id: targetId, type: relType, strength, content: content?.slice(0, 50) || "" });
+                    };
+                    
+                    // Phase 0: TEMPORAL - Link to most recent memory (conversation flow)
+                    const recentMem = db.prepare(`
+                        SELECT id, content FROM LongTermMemory 
+                        WHERE userId = ? AND id != ? AND projectId = ?
+                        ORDER BY createdAt DESC LIMIT 1
+                    `).get(userId, id, projectId || "default") as any;
+                    if (recentMem) {
+                        createLink(recentMem.id, "temporal", 0.9, recentMem.content);
+                    }
+                    
                     if (entities.length > 0) {
-                        // Phase 1: Find memories with same entities (entity matching)
+                        // Phase 1: Entity Match (HIGHEST PRIORITY - strength 0.8)
                         for (const entity of entities.slice(0, 3)) {
                             const relatedByEntity = db.prepare(`
                                 SELECT id, content, intent, entities FROM LongTermMemory 
@@ -244,17 +273,11 @@ export const memoryTool = {
                             `).all(userId, id, `%${entity}%`) as any[];
                             
                             for (const rel of relatedByEntity) {
-                                if (autoLinks.find(l => l.id === rel.id)) continue;
-                                const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
-                                db.prepare(`
-                                    INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                `).run(linkId, id, rel.id, "entity_related", 0.8, new Date().toISOString());
-                                autoLinks.push({ id: rel.id, type: "entity", content: rel.content?.slice(0, 50) });
+                                createLink(rel.id, "entity_related", 0.8, rel.content);
                             }
                         }
                         
-                        // Phase 2: Find memories with similar intent (context clustering)
+                        // Phase 2: Intent Cluster (context clustering - strength 0.6)
                         const similarIntent = db.prepare(`
                             SELECT id, content, entities FROM LongTermMemory 
                             WHERE userId = ? AND id != ? AND intent = ? AND createdAt > datetime('now', '-1 hour')
@@ -262,20 +285,26 @@ export const memoryTool = {
                         `).all(userId, id, intent) as any[];
                         
                         for (const rel of similarIntent) {
-                            if (autoLinks.find(l => l.id === rel.id)) continue;
                             const relEntities = JSON.parse(rel.entities || "[]");
                             const sharedEntity = entities.find(e => relEntities.includes(e));
                             if (sharedEntity) {
-                                const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
-                                db.prepare(`
-                                    INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                `).run(linkId, id, rel.id, "intent_cluster", 0.6, new Date().toISOString());
-                                autoLinks.push({ id: rel.id, type: "intent", content: rel.content?.slice(0, 50) });
+                                createLink(rel.id, "intent_cluster", 0.6, rel.content);
                             }
                         }
                         
-                        // Phase 3: Cross-reference keywords for deeper linking
+                        // Phase 3: Project Match (same project context - strength 0.7)
+                        const sameProject = db.prepare(`
+                            SELECT id, content FROM LongTermMemory 
+                            WHERE userId = ? AND id != ? AND projectId = ?
+                            AND id NOT IN (SELECT memoryId2 FROM MemoryLinks WHERE memoryId1 = ?)
+                            ORDER BY createdAt DESC LIMIT 3
+                        `).all(userId, id, projectId || "default", id) as any[];
+                        
+                        for (const rel of sameProject) {
+                            createLink(rel.id, "project_related", 0.7, rel.content);
+                        }
+                        
+                        // Phase 4: Keyword Match (deeper linking - strength 0.4)
                         const keywords = expandQuery(text).slice(0, 5);
                         for (const kw of keywords) {
                             const byKeyword = db.prepare(`
@@ -286,16 +315,22 @@ export const memoryTool = {
                             `).all(userId, id, `%${kw}%`, `%${kw}%`, id) as any[];
                             
                             for (const rel of byKeyword) {
-                                if (autoLinks.find(l => l.id === rel.id)) continue;
-                                if (autoLinks.length >= 10) break;
-                                const linkId = `link_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
-                                db.prepare(`
-                                    INSERT OR IGNORE INTO MemoryLinks (id, memoryId1, memoryId2, relationship, strength, createdAt)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                `).run(linkId, id, rel.id, "keyword_related", 0.4, new Date().toISOString());
-                                autoLinks.push({ id: rel.id, type: "keyword", content: rel.content?.slice(0, 50) });
+                                if (autoLinks.length >= 15) break;
+                                createLink(rel.id, "keyword_related", 0.4, rel.content);
                             }
-                            if (autoLinks.length >= 10) break;
+                            if (autoLinks.length >= 15) break;
+                        }
+                    }
+                    
+                    // Phase 5: Adaptive Boost - If this memory has high priority, boost related memories
+                    if (priority >= 0.7) {
+                        const linkedIds = autoLinks.map(l => l.id);
+                        if (linkedIds.length > 0) {
+                            const placeholders = linkedIds.map(() => '?').join(',');
+                            db.prepare(`
+                                UPDATE LongTermMemory SET priority = MIN(1.0, priority + 0.05) 
+                                WHERE id IN (${placeholders})
+                            `).run(...linkedIds);
                         }
                     }
                     
@@ -308,12 +343,12 @@ export const memoryTool = {
                         summarized: needsSummarization,
                         summaryLength: summary.length,
                         autoLinked: autoLinks.length,
-                        relatedMemories: autoLinks.map(l => l.id.slice(0, 15) + "...")
+                        relatedMemories: autoLinks.map(l => ({ id: l.id.slice(0, 15) + "...", type: l.type, strength: l.strength }))
                     }) }] };
                 }
                 
                 // =============================================
-                // RECALL: Smart search with query expansion
+                // RECALL: Smart search with query expansion + linked context
                 // =============================================
                 case "recall": {
                     const { query, limit } = args;
@@ -358,18 +393,39 @@ export const memoryTool = {
                         `).all(userId, l) as any[];
                     }
                     
-                    return { content: [{ type: "text", text: JSON.stringify({
-                        count: memories.length,
-                        query: query || "recent",
-                        results: memories.map(m => ({
+                    // ENHANCED: Include linked memories as context
+                    const resultsWithContext = memories.map(m => {
+                        // Get linked memories
+                        const links = db.prepare(`
+                            SELECT m2.id, m2.content, m2.intent, m2.priority, l.relationship, l.strength
+                            FROM MemoryLinks l
+                            JOIN LongTermMemory m2 ON m2.id = l.memoryId2
+                            WHERE l.memoryId1 = ? AND l.strength >= 0.5
+                            ORDER BY l.strength DESC
+                            LIMIT 3
+                        `).all(m.id) as any[];
+                        
+                        return {
                             id: m.id,
                             content: m.content?.slice(0, 100),
                             summary: m.summary,
                             intent: m.intent,
                             entities: JSON.parse(m.entities || "[]"),
                             priority: Math.round((m.priority || 0.5) * 100) + "%",
-                            created: m.createdAt
-                        }))
+                            created: m.createdAt,
+                            linkedContext: links.map(l => ({
+                                id: l.id.slice(0, 15) + "...",
+                                preview: l.content?.slice(0, 50),
+                                relationship: l.relationship,
+                                strength: l.strength
+                            }))
+                        };
+                    });
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        count: memories.length,
+                        query: query || "recent",
+                        results: resultsWithContext
                     }) }] };
                 }
                 
@@ -477,6 +533,81 @@ export const memoryTool = {
                             content: r.content?.slice(0, 100),
                             score: r.score
                         }))
+                    }) }] };
+                }
+                
+                // =============================================
+                // THREAD: Get memory with FULL linked context chain
+                // This is the KEY feature for robust memory
+                // =============================================
+                case "thread": {
+                    const { memoryId, depth } = args;
+                    if (!memoryId) return { content: [{ type: "text", text: "memoryId required" }], isError: true };
+                    
+                    const maxDepth = Math.min(depth ?? 2, 5); // Limit depth to prevent infinite loops
+                    
+                    // Get the root memory
+                    const root = db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(memoryId) as any;
+                    if (!root) return { content: [{ type: "text", text: "Memory not found" }], isError: true };
+                    
+                    // Build thread recursively
+                    const buildThread = (memId: string, currentDepth: number, visited: Set<string>): any[] => {
+                        if (currentDepth >= maxDepth || visited.has(memId)) return [];
+                        visited.add(memId);
+                        
+                        const mem = db.prepare(`SELECT * FROM LongTermMemory WHERE id = ?`).get(memId) as any;
+                        if (!mem) return [];
+                        
+                        // Get all linked memories
+                        const links = db.prepare(`
+                            SELECT m2.*, l.relationship, l.strength
+                            FROM MemoryLinks l
+                            JOIN LongTermMemory m2 ON m2.id = l.memoryId2
+                            WHERE l.memoryId1 = ? AND l.strength >= 0.5
+                            ORDER BY l.strength DESC
+                            LIMIT 5
+                        `).all(memId) as any[];
+                        
+                        const thread = {
+                            id: mem.id,
+                            content: mem.content,
+                            response: mem.response,
+                            summary: mem.summary,
+                            intent: mem.intent,
+                            entities: JSON.parse(mem.entities || "[]"),
+                            priority: Math.round((mem.priority || 0.5) * 100) + "%",
+                            created: mem.createdAt,
+                            depth: currentDepth,
+                            linked: links.map(l => ({
+                                id: l.id,
+                                preview: l.content?.slice(0, 80),
+                                relationship: l.relationship,
+                                strength: l.strength
+                            })),
+                            children: [] as any[]
+                        };
+                        
+                        // Recursively get children
+                        for (const link of links.slice(0, 3)) {
+                            if (!visited.has(link.id)) {
+                                thread.children.push(...buildThread(link.id, currentDepth + 1, visited));
+                            }
+                        }
+                        
+                        return [thread];
+                    };
+                    
+                    const visited = new Set<string>();
+                    const thread = buildThread(memoryId, 0, visited);
+                    
+                    // Also boost access count for this memory
+                    db.prepare(`UPDATE LongTermMemory SET accessCount = accessCount + 1 WHERE id = ?`).run(memoryId);
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        root: memoryId,
+                        depth: maxDepth,
+                        nodesVisited: visited.size,
+                        thread
                     }) }] };
                 }
                 
