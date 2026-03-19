@@ -672,3 +672,448 @@ export const selfImprovementPrompts: PromptTemplate[] = [
 export const allPrompts = [...promptTemplates, ...selfImprovementPrompts];
 
 export const getAllPrompts = () => allPrompts;
+
+// Multi-User Memory Prompts
+export const multiUserPrompts: PromptTemplate[] = [
+    {
+        name: "memory_start",
+        description: "Start a conversation with comprehensive context retrieval - retrieves timeline, topics, relations, and shared memories",
+        arguments: [
+            { name: "ownerId", description: "Memory owner ID", required: true, schema: z.string() },
+            { name: "sessionId", description: "Current session ID (optional)", required: false, schema: z.string() },
+            { name: "timeRange", description: "Time range: today, week, month, all", required: false, schema: z.string().default("week") },
+            { name: "topicFilter", description: "Topics to focus on (optional)", required: false, schema: z.array(z.string()) }
+        ],
+        generate: async (args) => {
+            const { getBetterContext } = await import("../tools/contextBetter.js");
+            const { addTimelineEntry, createSession } = await import("../tools/session.js");
+            const { ownerId, sessionId, timeRange = "week", topicFilter } = args;
+            
+            let context;
+            if (sessionId) {
+                context = getBetterContext({ ownerId, sessionId, timeRange: timeRange as any, topicFilter });
+            } else {
+                const newSession = createSession({ ownerId, type: "persistent", title: "New Conversation" });
+                context = getBetterContext({ 
+                    ownerId, 
+                    sessionId: newSession.id, 
+                    timeRange: timeRange as any, 
+                    topicFilter 
+                });
+            }
+            
+            let content = `# Memory Context: ${ownerId}\n\n`;
+            content += `## Summary\n${context.summary}\n\n`;
+            
+            if (context.context.timeline.length > 0) {
+                content += `## Recent Timeline\n`;
+                context.context.timeline.slice(0, 3).forEach((t: any) => {
+                    content += `### ${t.date}\n`;
+                    content += `${t.entries.length} memories\n`;
+                });
+                content += "\n";
+            }
+            
+            if (Object.keys(context.context.topics).length > 0) {
+                content += `## Active Topics\n`;
+                Object.keys(context.context.topics).forEach(topic => {
+                    content += `- ${topic}: ${context.context.topics[topic].length} memories\n`;
+                });
+                content += "\n";
+            }
+            
+            if (Object.keys(context.context.relations).length > 0) {
+                content += `## Your Network\n`;
+                Object.keys(context.context.relations).slice(0, 5).forEach(person => {
+                    content += `- ${person} (${context.context.relations[person].type})\n`;
+                });
+                content += "\n";
+            }
+            
+            if (context.context.sharedFromOthers.length > 0) {
+                content += `## Shared With You\n`;
+                context.context.sharedFromOthers.slice(0, 3).forEach((s: any) => {
+                    content += `- From ${s.from || s.fromPerson}: ${s.content?.slice(0, 50)}...\n`;
+                });
+                content += "\n";
+            }
+            
+            content += `## Ready to Help\n`;
+            content += `I have context from your ${timeRange}. What would you like to work on?`;
+            
+            return {
+                messages: [{ role: "user", content: { type: "text", text: content } }]
+            };
+        }
+    },
+    {
+        name: "memory_share",
+        description: "Share memory or information with another user (e.g., wife, partner) with perspective notes",
+        arguments: [
+            { name: "fromOwnerId", description: "Who is sharing (e.g., user, wife)", required: true, schema: z.string() },
+            { name: "toOwnerId", description: "Who to share with", required: true, schema: z.string() },
+            { name: "memoryId", description: "Timeline memory ID to share", required: false, schema: z.string() },
+            { name: "content", description: "Content to share if no memoryId", required: false, schema: z.string() },
+            { name: "perspectiveNote", description: "Note explaining the perspective", required: false, schema: z.string() },
+            { name: "reason", description: "Why sharing this (e.g., deadline, task, info)", required: false, schema: z.string() }
+        ],
+        generate: async (args) => {
+            const { shareMemory } = await import("../tools/share.js");
+            const { addTimelineEntry } = await import("../tools/session.js");
+            const { fromOwnerId, toOwnerId, memoryId, content, perspectiveNote, reason } = args;
+            
+            let shareResult;
+            if (memoryId) {
+                shareResult = shareMemory({
+                    memoryId,
+                    memoryType: "timeline",
+                    fromOwnerId,
+                    toOwnerId,
+                    perspectiveNote: perspectiveNote || reason,
+                    shareType: "manual"
+                });
+            } else if (content) {
+                const entry = addTimelineEntry(fromOwnerId, {
+                    content,
+                    memoryType: "shared",
+                    perspectiveOf: "self"
+                });
+                shareResult = shareMemory({
+                    memoryId: entry.id,
+                    memoryType: "timeline",
+                    fromOwnerId,
+                    toOwnerId,
+                    perspectiveNote: perspectiveNote || reason,
+                    shareType: "manual"
+                });
+            }
+            
+            let responseContent = `# Share Memory\n\n`;
+            
+            if (shareResult?.success) {
+                responseContent += `## Shared Successfully!\n`;
+                responseContent += `From: ${fromOwnerId}\n`;
+                responseContent += `To: ${toOwnerId}\n`;
+                if (perspectiveNote) responseContent += `Note: ${perspectiveNote}\n`;
+                responseContent += `\n${toOwnerId} will see this in their shared memories.`;
+            } else {
+                responseContent += `## Sharing Failed\n`;
+                responseContent += shareResult?.error || "Unknown error occurred.";
+            }
+            
+            return {
+                messages: [{ role: "user", content: { type: "text", text: responseContent } }]
+            };
+        }
+    },
+    {
+        name: "memory_summary",
+        description: "Get a summary of memories organized by timeline, topics, and persons for a specific period",
+        arguments: [
+            { name: "ownerId", description: "Memory owner ID", required: true, schema: z.string() },
+            { name: "period", description: "Period: today, yesterday, week, month", required: false, schema: z.string().default("week") },
+            { name: "includeShared", description: "Include shared memories", required: false, schema: z.union([z.string(), z.boolean()]).default("true") },
+            { name: "groupBy", description: "Group by: timeline, topic, person", required: false, schema: z.string().default("timeline") }
+        ],
+        generate: async (args) => {
+            const { db } = await import("../db/sqlite.js");
+            const { ownerId, period, includeShared = true, groupBy = "timeline" } = args;
+            
+            const now = new Date();
+            let startDate: Date;
+            let dateLabel: string;
+            
+            switch (period) {
+                case "today":
+                    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    dateLabel = "Today";
+                    break;
+                case "yesterday":
+                    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+                    dateLabel = "Yesterday";
+                    break;
+                case "week":
+                    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                    dateLabel = "This Week";
+                    break;
+                case "month":
+                    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                    dateLabel = "This Month";
+                    break;
+                default:
+                    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                    dateLabel = "This Week";
+            }
+            
+            const start = startDate.toISOString();
+            const end = now.toISOString();
+            
+            let content = `# Memory Summary: ${dateLabel}\n\n`;
+            content += `Owner: ${ownerId}\n`;
+            content += `Period: ${start.slice(0, 10)} to ${end.slice(0, 10)}\n\n`;
+            
+            // Direct DB query for timeline
+            const timelineEntries = db.prepare(`
+                SELECT * FROM Timeline 
+                WHERE ownerId = ? AND timeSlot >= ? AND timeSlot <= ?
+                ORDER BY timeSlot DESC LIMIT 100
+            `).all(ownerId, start, end) as any[];
+            
+            // Group by day
+            const groupedByDay = new Map<string, any[]>();
+            timelineEntries.forEach(e => {
+                const day = e.timeSlot?.slice(0, 10) || "Unknown";
+                if (!groupedByDay.has(day)) groupedByDay.set(day, []);
+                groupedByDay.get(day)!.push(e);
+            });
+            
+            if (groupedByDay.size > 0) {
+                content += `## Timeline\n`;
+                Array.from(groupedByDay.entries()).slice(0, 7).forEach(([day, entries]) => {
+                    content += `### ${day}\n`;
+                    entries.slice(0, 5).forEach((e: any) => {
+                        content += `- ${e.content?.slice(0, 80)}...\n`;
+                    });
+                });
+                content += "\n";
+            }
+            
+            if (groupBy === "topic" || groupBy === "all") {
+                // Direct DB query for topics
+                const topics = db.prepare(`
+                    SELECT t.*, topic.name as topicName 
+                    FROM Timeline t
+                    LEFT JOIN Topics topic ON t.topicId = topic.id
+                    WHERE t.ownerId = ? AND t.timeSlot >= ? AND t.timeSlot <= ?
+                `).all(ownerId, start, end) as any[];
+                
+                const groupedByTopic = new Map<string, any[]>();
+                topics.forEach(t => {
+                    const topicName = t.topicName || "Uncategorized";
+                    if (!groupedByTopic.has(topicName)) groupedByTopic.set(topicName, []);
+                    groupedByTopic.get(topicName)!.push(t);
+                });
+                
+                if (groupedByTopic.size > 0) {
+                    content += `## By Topic\n`;
+                    Array.from(groupedByTopic.entries()).forEach(([topic, entries]) => {
+                        content += `### ${topic} (${entries.length})\n`;
+                        entries.slice(0, 3).forEach((m: any) => {
+                            content += `- ${m.content?.slice(0, 60)}...\n`;
+                        });
+                    });
+                    content += "\n";
+                }
+            }
+            
+            if (includeShared) {
+                const sharedSql = `
+                    SELECT sm.*, t.content, t.timeSlot
+                    FROM SharedMemories sm
+                    LEFT JOIN Timeline t ON sm.memoryId = t.id
+                    WHERE sm.toOwnerId = ? AND sm.createdAt >= ? AND sm.createdAt <= ?
+                    ORDER BY sm.createdAt DESC
+                    LIMIT 10
+                `;
+                const shared = db.prepare(sharedSql).all(ownerId, start, end) as any[];
+                
+                if (shared.length > 0) {
+                    content += `## Shared With You\n`;
+                    shared.forEach((s: any) => {
+                        content += `- From ${s.fromOwnerId}: ${s.content?.slice(0, 60)}...\n`;
+                    });
+                }
+            }
+            
+            const totalMemories = timelineEntries.length;
+            content += `---\n`;
+            content += `Total memories: ${totalMemories}\n`;
+            
+            return {
+                messages: [{ role: "user", content: { type: "text", text: content } }]
+            };
+        }
+    },
+    {
+        name: "extract_context",
+        description: "Extract entities, relationships, and deadlines from conversation text and auto-store with perspective",
+        arguments: [
+            { name: "text", description: "Text or conversation to analyze", required: true, schema: z.string() },
+            { name: "ownerId", description: "Memory owner ID", required: true, schema: z.string() },
+            { name: "sessionId", description: "Current session ID", required: false, schema: z.string() },
+            { name: "sourcePersonId", description: "Who said this (optional)", required: false, schema: z.string() },
+            { name: "autoStore", description: "Auto-store extracted entities", required: false, schema: z.union([z.string(), z.boolean()]).default("true") }
+        ],
+        generate: async (args) => {
+            const { extractWithPatterns, extractWithLLM, storeExtractedEntities } = await import("../tools/extract.js");
+            const { addTimelineEntry } = await import("../tools/session.js");
+            const { text, ownerId, sessionId, sourcePersonId, autoStore = true } = args;
+            
+            const extracted = await extractWithLLM(text, true);
+            
+            let content = `# Entity Extraction Results\n\n`;
+            content += `## Summary\n${extracted.summary}\n\n`;
+            
+            if (extracted.entities.length > 0) {
+                content += `## Extracted Entities\n`;
+                extracted.entities.forEach((e: any) => {
+                    content += `- **${e.name}** (${e.type}) - ${Math.round(e.confidence * 100)}% confidence\n`;
+                    if (e.email) content += `  - Email: ${e.email}\n`;
+                    if (e.role) content += `  - Role: ${e.role}\n`;
+                });
+                content += "\n";
+            }
+            
+            if (extracted.relations.length > 0) {
+                content += `## Relationships\n`;
+                extracted.relations.forEach((r: any) => {
+                    content += `- **${r.from}** ${r.type} **${r.to}**\n`;
+                });
+                content += "\n";
+            }
+            
+            if (extracted.deadlines.length > 0) {
+                content += `## Deadlines\n`;
+                extracted.deadlines.forEach((d: any) => {
+                    content += `- **${d.task}** by ${d.date}\n`;
+                    if (d.owner) content += `  - Owner: ${d.owner}\n`;
+                });
+                content += "\n";
+            }
+            
+            if (extracted.topics.length > 0) {
+                content += `## Topics\n${extracted.topics.join(", ")}\n\n`;
+            }
+            
+            if (autoStore) {
+                const stored = storeExtractedEntities(
+                    ownerId,
+                    "default",
+                    extracted,
+                    sessionId,
+                    undefined,
+                    sourcePersonId
+                );
+                
+                content += `## Storage\n`;
+                content += `- Entities stored: ${stored.entities.length}\n`;
+                content += `- Relations stored: ${stored.relations.length}\n`;
+                content += `- Timeline entries: ${stored.memoryIds.length}\n`;
+            }
+            
+            content += `\n---\n`;
+            content += `Use **share_memory** to share relevant info with your wife/partner.`;
+            
+            return {
+                messages: [{ role: "user", content: { type: "text", text: content } }]
+            };
+        }
+    },
+    {
+        name: "person_memories",
+        description: "Get all memories and relationships about a specific person",
+        arguments: [
+            { name: "ownerId", description: "Memory owner ID", required: true, schema: z.string() },
+            { name: "personId", description: "Person ID or name", required: true, schema: z.string() },
+            { name: "perspective", description: "View: self, other, or all", required: false, schema: z.string().default("all") }
+        ],
+        generate: async (args) => {
+            const { getMemoryForPerson } = await import("../tools/contextBetter.js");
+            const { db } = await import("../db/sqlite.js");
+            const { ownerId, personId, perspective = "all" } = args;
+            
+            const memories = getMemoryForPerson(ownerId, personId, { perspective: perspective as any });
+            
+            const entitySql = `SELECT * FROM Entities WHERE (id = ? OR name = ?) AND entityType IN ('Person', 'Bot', 'Organization') LIMIT 1`;
+            const entity = db.prepare(entitySql).get(personId, personId) as any;
+            
+            let content = `# Memories About: ${personId}\n\n`;
+            
+            if (entity) {
+                content += `## Entity Info\n`;
+                content += `- Type: ${entity.entityType}\n`;
+                content += `- Name: ${entity.name}\n`;
+                if (entity.email) content += `- Email: ${entity.email}\n`;
+                if (entity.role) content += `- Role: ${entity.role}\n`;
+                
+                const relationsSql = `
+                    SELECT r.*, e.name as fromName, e2.name as toName
+                    FROM Relations r
+                    JOIN Entities e ON r.fromId = e.id
+                    JOIN Entities e2 ON r.toId = e2.id
+                    WHERE r.fromId = ? OR r.toId = ?
+                    LIMIT 20
+                `;
+                const relations = db.prepare(relationsSql).all(entity.id, entity.id) as any[];
+                
+                if (relations.length > 0) {
+                    content += `\n## Relationships\n`;
+                    relations.forEach((r: any) => {
+                        const other = r.fromId === entity.id ? r.toName : r.fromName;
+                        content += `- **${r.relationType}** with ${other}\n`;
+                    });
+                }
+            }
+            
+            content += `\n## Memories\n`;
+            content += `Total: ${memories.length}\n\n`;
+            
+            memories.slice(0, 10).forEach((m: any) => {
+                const date = m.timeSlot?.slice(0, 10) || "Unknown";
+                content += `### ${date} (${m.perspectiveOf})\n`;
+                content += `${m.content?.slice(0, 150)}...\n\n`;
+            });
+            
+            content += `---\n`;
+            content += `Use **share_memory** to share relevant info about this person.`;
+            
+            return {
+                messages: [{ role: "user", content: { type: "text", text: content } }]
+            };
+        }
+    },
+    {
+        name: "shared_with_me",
+        description: "View all memories shared with you by others (e.g., wife sharing deadlines)",
+        arguments: [
+            { name: "ownerId", description: "Your owner ID", required: true, schema: z.string() },
+            { name: "markRead", description: "Mark all as read after viewing", required: false, schema: z.union([z.string(), z.boolean()]).default("true") }
+        ],
+        generate: async (args) => {
+            const { getSharedWithMe, markAllAsRead } = await import("../tools/share.js");
+            const { ownerId, markRead = true } = args;
+            
+            const shared = getSharedWithMe(ownerId, { includeRead: false });
+            const unread = shared.filter((s: any) => !s.isRead).length;
+            
+            let content = `# Shared With You\n\n`;
+            content += `Unread: ${unread}\n`;
+            content += `Total: ${shared.length}\n\n`;
+            
+            if (shared.length > 0) {
+                content += `## Recent Shares\n`;
+                shared.slice(0, 10).forEach((s: any) => {
+                    const readStatus = s.isRead ? "✓" : "○";
+                    content += `${readStatus} **From ${s.fromPerson || s.from}**\n`;
+                    if (s.perspective) content += `   Note: ${s.perspective}\n`;
+                    content += `   ${s.content?.slice(0, 100)}...\n`;
+                    content += `   ${s.sharedAt?.slice(0, 16)}\n\n`;
+                });
+            } else {
+                content += `No shared memories yet.\n`;
+            }
+            
+            if (markRead && unread > 0) {
+                markAllAsRead(ownerId);
+                content += `\n---\nMarked ${unread} items as read.`;
+            }
+            
+            return {
+                messages: [{ role: "user", content: { type: "text", text: content } }]
+            };
+        }
+    }
+];
+
+// Add multi-user prompts to all prompts
+export const allPromptsWithMultiUser = [...allPrompts, ...multiUserPrompts];

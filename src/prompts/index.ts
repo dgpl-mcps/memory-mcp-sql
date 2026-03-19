@@ -1,7 +1,9 @@
-import { promptTemplates, getPromptTemplate, allPrompts } from "./templates.js";
+import { promptTemplates, getPromptTemplate, allPrompts, multiUserPrompts } from "./templates.js";
+
+const allPromptsCombined = [...allPrompts, ...multiUserPrompts];
 
 export const getPrompts = async () => {
-    const prompts = allPrompts.map(template => ({
+    const prompts = allPromptsCombined.map(template => ({
         name: template.name,
         description: template.description,
         arguments: template.arguments.map(arg => ({
@@ -15,7 +17,7 @@ export const getPrompts = async () => {
 };
 
 export const getPrompt = async (name: string, args: Record<string, any>) => {
-    const template = allPrompts.find(p => p.name === name);
+    const template = allPromptsCombined.find(p => p.name === name);
     
     if (!template) {
         throw new Error(`Prompt '${name}' not found`);
