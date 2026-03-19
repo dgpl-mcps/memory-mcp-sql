@@ -32,7 +32,7 @@ interface DbConfig {
     vectorBackend: 'vss' | 'vec' | 'none';
 }
 
-const dbConfig: DbConfig = {
+export const dbConfig: DbConfig = {
     useVectorSearch: false,
     vectorBackend: 'none'
 };

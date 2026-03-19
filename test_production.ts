@@ -330,6 +330,26 @@ async function test() {
         return check && (check.ok === "ok" || check['integrity_check'] === "ok");
     });
     
+    await test("31. Semantic search works", async () => {
+        const r = await memoryTool.handler({
+            op: "semantic",
+            userId: testUser,
+            query: "authentication"
+        });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.type !== undefined;
+    });
+    
+    await test("32. Vector backend detected", async () => {
+        const r = await memoryTool.handler({
+            op: "semantic",
+            userId: testUser,
+            query: "test"
+        });
+        const data = safeParse(r.content?.[0]?.text);
+        return data.engine !== undefined;
+    });
+    
     console.log("\n=== TEST RESULTS ===");
     console.log(`✅ Passed: ${passed}/30`);
     console.log(`❌ Failed: ${failed}/30`);

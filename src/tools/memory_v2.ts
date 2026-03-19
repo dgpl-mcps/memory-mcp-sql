@@ -2,7 +2,7 @@
 // ROBUST MEMORY TOOL
 // Features: Auto-extract, intent detection, query expansion, smart defaults
 // =============================================
-import { db } from "../db/sqlite.js";
+import { db, dbConfig } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 
 // Intent detection patterns
@@ -153,7 +153,8 @@ export const memoryTool = {
 | link | Link memories |
 | all | Get everything (quick start) |
 | recent | Get recent memories |
-| search | Semantic search |
+| search | Semantic search (vector + keyword) |
+| semantic | Pure vector similarity search |
 | thread | Get memory with full linked context chain |
 | health | Memory health & optimization suggestions |
 | decay | Decay unused memories |
@@ -164,13 +165,14 @@ export const memoryTool = {
 | suggest | Get smart suggestions |
 
 **Smart Features:**
-- Intent detection & priority boost
-- Entity extraction (@mentions, CamelCase)
-- 5-phase auto-linking
-- Thread context chains
-- Health monitoring & decay
-- Emotional memory & learning
-- Proactive suggestions
+- **8-phase auto-linking** (bidirectional)
+- **Intent detection** & priority boost
+- **Entity extraction** (@mentions, CamelCase, #hashtags)
+- **Vector search** (semantic similarity)
+- **Thread context chains**
+- **Health monitoring** & decay
+- **Emotional memory** & learning
+- **Proactive suggestions**
 
 **Examples:**
 \`\`\`json
@@ -182,7 +184,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -638,6 +640,101 @@ export const memoryTool = {
                             id: r.id,
                             content: r.content?.slice(0, 100),
                             score: r.score
+                        }))
+                    }) }] };
+                }
+                
+                // =============================================
+                // SEMANTIC: Pure vector similarity search
+                // Uses embeddings for semantic understanding
+                // =============================================
+                case "semantic": {
+                    const { query, limit = 10 } = args;
+                    if (!query) return { content: [{ type: "text", text: "query required" }], isError: true };
+                    
+                    // Check if vector search is available
+                    const hasVector = dbConfig?.vectorBackend !== 'none';
+                    
+                    if (hasVector) {
+                        // Use vector search via sqlite-vss or sqlite-vec
+                        try {
+                            const tableName = dbConfig?.vectorBackend === 'vss' ? 'vss_doc' : 'vec_doc';
+                            let sql: string;
+                            
+                            if (dbConfig?.vectorBackend === 'vss') {
+                                sql = `
+                                    SELECT m.*, v.distance 
+                                    FROM ${tableName} v 
+                                    JOIN LongTermMemory m ON v.rowid = m.rowid
+                                    WHERE m.userId = ?
+                                    AND vss_search(v.embedding, vss_search_params(?, ?))
+                                    LIMIT ?
+                                `;
+                            } else {
+                                sql = `
+                                    SELECT m.*, v.distance as score
+                                    FROM ${tableName} v 
+                                    JOIN LongTermMemory m ON v.rowid = m.rowid
+                                    WHERE m.userId = ?
+                                    ORDER BY v.embedding <=> ? 
+                                    LIMIT ?
+                                `;
+                            }
+                            
+                            const results = db.prepare(sql).all(userId, query, 0.5, limit) as any[];
+                            
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                query,
+                                type: "semantic",
+                                engine: dbConfig?.vectorBackend,
+                                count: results.length,
+                                results: results.map(r => ({
+                                    id: r.id,
+                                    content: r.content?.slice(0, 100),
+                                    distance: r.distance || r.score,
+                                    intent: r.intent,
+                                    entities: JSON.parse(r.entities || "[]")
+                                }))
+                            }) }] };
+                        } catch (e: any) {
+                            // Fallback to keyword if vector fails
+                            console.error("Vector search failed:", e.message);
+                        }
+                    }
+                    
+                    // Fallback to enhanced keyword search
+                    const expanded = expandQuery(query);
+                    const results: any[] = [];
+                    
+                    expanded.forEach(q => {
+                        const found = db.prepare(`
+                            SELECT *, content || ' ' || response as full_text
+                            FROM LongTermMemory 
+                            WHERE userId = ? AND (content LIKE ? OR summary LIKE ?)
+                            ORDER BY priority DESC
+                            LIMIT ?
+                        `).all(userId, `%${q}%`, `%${q}%`, limit) as any[];
+                        
+                        found.forEach(f => {
+                            if (!results.find(r => r.id === f.id)) {
+                                f.score = relevanceScore(f.full_text || "", query);
+                                results.push(f);
+                            }
+                        });
+                    });
+                    
+                    results.sort((a, b) => (b.score || 0) - (a.score || 0));
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        query,
+                        type: "semantic_fallback",
+                        engine: "keyword",
+                        count: results.length,
+                        results: results.slice(0, limit).map(r => ({
+                            id: r.id,
+                            content: r.content?.slice(0, 100),
+                            score: r.score,
+                            intent: r.intent
                         }))
                     }) }] };
                 }
