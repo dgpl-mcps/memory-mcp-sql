@@ -260,6 +260,46 @@ LONG_TERM_THRESHOLD=75%     # Above → long-term
 
 ---
 
+---
+
+## Vector Search (sqlite-vec & sqlite-vss)
+
+The MCP server uses **sqlite-vec** and **sqlite-vss** for vector similarity search.
+
+### Backend Selection
+The server auto-detects available extensions (priority: sqlite-vss → sqlite-vec → none):
+```typescript
+// In src/db/sqlite.ts - initializeVectorExtension()
+sqlite-vss: CREATE VIRTUAL TABLE vss_* USING vss0(embedding(384))
+sqlite-vec: CREATE VIRTUAL TABLE vec_* USING vec0(embedding float[384])
+```
+
+### Vector Tables
+| Table | Purpose | Backend |
+|-------|---------|---------|
+| `vss_stm` / `vec_stm` | Statement embeddings | `memory_remember`, `memory_search` |
+| `vss_doc` / `vec_doc` | Document embeddings | `remember_learning`, `document_search` |
+| `vss_embeddings` / `vec_embeddings` | Entity embeddings | `store_entity`, `search_graph` |
+
+### Usage Flow
+1. Content stored via `memory_remember` / `store_entity` / `remember_learning`
+2. Embedding generated via `getEmbeddingString()` (384-dim vector)
+3. Vector stored in appropriate vss_*/vec_* table
+4. Search uses `vss_search()` or `<=>` operator for similarity
+
+### Embedding Service
+Requires external embedding service (configured via `EMBEDDING_SERVICE_URL` env var). If not configured, falls back to simple text matching.
+
+### Dependencies (package.json)
+```json
+{
+  "sqlite-vec": "^0.1.7-alpha.2",
+  "sqlite-vss": "^0.1.2"
+}
+```
+
+---
+
 ## Error Handling
 
 | Error | Cause | Solution |
