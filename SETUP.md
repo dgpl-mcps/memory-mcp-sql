@@ -108,6 +108,20 @@ node build/index.js
 
 ## Step 5: Configure OpenClaw
 
+**⚠️ IMPORTANT: defer_loading must be true for tools to work:**
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "node",
+      "args": ["/root/.openclaw/workspace/memory-mcp-sql/build/index.js"],
+      "env": {},
+      "defer_loading": true
+    }
+  }
+}
+```
+
 ### Check OpenClaw Config Path
 
 ```bash
