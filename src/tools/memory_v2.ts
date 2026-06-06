@@ -2,7 +2,7 @@
 // ROBUST MEMORY TOOL
 // Features: Auto-extract, intent detection, query expansion, smart defaults
 // =============================================
-import { db, dbConfig, searchEmbeddings } from "../db/sqlite.js";
+import { db, dbConfig, searchEmbeddings, storeEmbedding } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 
 // Intent detection patterns
@@ -267,6 +267,16 @@ export const memoryTool = {
                         JSON.stringify(entities),
                         priority, new Date().toISOString()
                     );
+                    
+                    // Also store an embedding for vector search.
+                    // This populates the Embeddings table + vss_embeddings virtual table,
+                    // enabling the `semantic` op to find this memory via vector similarity.
+                    // Best-effort: if embedding generation fails, the memory is still stored.
+                    try {
+                        await storeEmbedding("LongTermMemory", id, userId, `${userMessage || ""} ${agentMessage || ""}`.trim());
+                    } catch (e) {
+                        console.error(`[memory] failed to store embedding for ${id}: ${(e as Error).message}`);
+                    }
                     
                     // Auto-link to related memories (ROBUST 5-PHASE SYSTEM)
                     interface AutoLink { id: string; type: string; content: string; strength: number; }
@@ -657,8 +667,10 @@ export const memoryTool = {
                     const { query, limit = 10 } = args;
                     if (!query) return { content: [{ type: "text", text: "query required" }], isError: true };
                     
-                    // Check if vector search is available
-                    const hasVector = dbConfig?.useVectorSearch && process.env.EMBEDDING_URL;
+                    // Check if vector search is available.
+                    // We now have a local embedder, so vector search is always usable
+                    // when vss0/vec0 loaded successfully (dbConfig.useVectorSearch).
+                    const hasVector = dbConfig?.useVectorSearch === true;
                     
                     // First, try to get vector results from Embeddings table
                     const vectorResults = await searchEmbeddings(userId, query, "LongTermMemory", limit);
