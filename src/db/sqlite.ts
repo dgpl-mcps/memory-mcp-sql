@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { createRequire } from 'module';
 import { getMemoryConfig } from '../utils/env.js';
+import { embedText, EMBED_DIMENSION, resetIdfCache, feedIdfCorpus } from '../utils/local-embed.js';
 
 const require = createRequire(import.meta.url);
 let sqliteVss: any = null;
@@ -38,8 +39,41 @@ export const dbConfig: DbConfig = {
 };
 
 // Database setup
-const dbPath = path.resolve(process.cwd(), 'memory_mcp.db');
+// Resolve database path with override support.
+// Priority (highest to lowest):
+//   1. MEMORY_DB_PATH env var (set via .env or shell)
+//   2. ~/.memory/memory_db (Unix default; auto-created)
+//   3. ./memory_mcp.db (legacy fallback for backwards compat)
+//
+// The default ~/.memory/memory_db is preferred because it lives outside
+// the project tree, survives project moves, and follows XDG-style home
+// directory conventions.
+const DEFAULT_DB_DIR = path.join(process.env.HOME || process.cwd(), '.memory');
+const DEFAULT_DB_PATH = path.join(DEFAULT_DB_DIR, 'memory_db');
+const LEGACY_DB_PATH = path.resolve(process.cwd(), 'memory_mcp.db');
+const dbPath = process.env.MEMORY_DB_PATH
+    ? path.resolve(process.env.MEMORY_DB_PATH)
+    : DEFAULT_DB_PATH;
+// Database path is shown at init time so users can see where their data lives.
+const ACTIVE_DB_PATH = dbPath;
+
+// On first run, the parent directory might not exist. We create it eagerly
+// so the first `new Database()` doesn't fail with ENOENT. better-sqlite3
+// creates the file but not the parent directory.
+try {
+    const dir = path.dirname(dbPath);
+    if (!require('fs').existsSync(dir)) {
+        require('fs').mkdirSync(dir, { recursive: true });
+    }
+} catch (e) {
+    // Best-effort. If we can't create the dir, the Database constructor will
+    // throw a clear error.
+    console.error(`[init] could not create db dir: ${(e as Error).message}`);
+}
+
 export const db = new Database(dbPath);
+
+
 
 export const initSqlite = () => {
     db.pragma('journal_mode = WAL');
@@ -689,29 +723,51 @@ export const initSqlite = () => {
         }
     }
 
-    console.error(`SQLite Initialized with MCP schema (${dbConfig.vectorBackend === 'none' ? 'no' : dbConfig.vectorBackend} vector search, WAL mode)`);
+    const embedder = process.env.EMBEDDING_URL ? `remote:${process.env.EMBEDDING_URL}` : 'local (feature-hashing TF-IDF, 384d)';
+    console.error(`SQLite db: ${ACTIVE_DB_PATH} (SQLite Initialized)`);
+
 };
 
-const getEmbeddingString = async (text: string): Promise<string | null> => {
+/**
+ * Generate a JSON-string vector embedding for storage in vss0/vec0.
+ *
+ * Default: local embedder (zero-config, fully offline, deterministic).
+ * Override: if EMBEDDING_URL is set, we hit that endpoint instead and
+ *           expect { embedding: number[] } back. Same dimension assumed.
+ *
+ * Never returns null — always returns a valid JSON string. Even for
+ * empty text, we return a zero vector ("[0,0,...]") so downstream
+ * inserts into vss0/vec0 don't fail. The zero vector just won't match
+ * anything in similarity search, which is the correct behavior.
+ */
+const getEmbeddingString = async (text: string): Promise<string> => {
     try {
-        // Using a simple fetch to a free/local embedding service or mock
-        // NOTE: In production, switch to an actual LLM Embedding endpoint. 
-        // Here we will use a demo endpoint if provided, or otherwise we fallback to skipping vector storage.
         if (process.env.EMBEDDING_URL) {
-            const res = await fetch(process.env.EMBEDDING_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ input: text })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                return JSON.stringify(data.embedding);
+            try {
+                const res = await fetch(process.env.EMBEDDING_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ input: text })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && Array.isArray(data.embedding) && data.embedding.length === EMBED_DIMENSION) {
+                        return JSON.stringify(data.embedding);
+                    }
+                    console.error(`[embed] EMBEDDING_URL returned wrong dim (${data?.embedding?.length}); falling back to local`);
+                } else {
+                    console.error(`[embed] EMBEDDING_URL returned ${res.status}; falling back to local`);
+                }
+            } catch (e) {
+                console.error(`[embed] EMBEDDING_URL fetch failed: ${(e as Error).message}; falling back to local`);
             }
         }
-        return null;
+        // Local embedder — always succeeds, returns JSON string
+        return embedText(text || "");
     } catch (e) {
-        console.error("Embedding generation failed:", e);
-        return null;
+        // Absolute fallback: zero vector. Log and continue.
+        console.error("Embedding generation failed entirely:", e);
+        return JSON.stringify(new Array(EMBED_DIMENSION).fill(0));
     }
 }
 
@@ -729,24 +785,27 @@ export const setShortTermMemory = async (userId: string, projectId: string, key:
     stmt.run(stmId, userId, projectId, key, valueStr);
 
     // 2. Insert/Update vector table for searchability
+    // getEmbeddingString now always returns a string (local embedder),
+    // so we always have an embedding to store.
     const embedding = await getEmbeddingString(`${key} ${valueStr}`);
-    if (embedding) {
+    {
         // Note: We need a numeric rowid for vss0 table
-        // Since id is TEXT, we hash the string to integer or lookup rowid. 
+        // Since id is TEXT, we hash the string to integer or lookup rowid.
         const rowIdStmt = db.prepare(`SELECT rowid FROM ShortTermMemory WHERE id = ?`);
         const rowInfo = rowIdStmt.get(stmId) as { rowid: number } | undefined;
         if (!rowInfo) return;
 
+        const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_stm' : 'vec_stm';
         const vssStmt = db.prepare(`
-              INSERT INTO vss_stm(rowid, embedding) 
+              INSERT INTO ${tableName}(rowid, embedding)
               VALUES (?, ?)
          `);
+        const runId = BigInt(rowInfo.rowid);
         try {
-            vssStmt.run(rowInfo.rowid, embedding);
+            vssStmt.run(runId, embedding);
         } catch (e) {
-            // If conflict or update, we might need to delete & re-insert for sqlite-vss
-            db.prepare(`DELETE FROM vss_stm WHERE rowid = ?`).run(rowInfo.rowid);
-            vssStmt.run(rowInfo.rowid, embedding);
+            db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(runId);
+            vssStmt.run(runId, embedding);
         }
     }
 };
@@ -762,30 +821,63 @@ export const getShortTermMemory = (userId: string, projectId: string, key: strin
 
 export const searchShortTermMemoryVector = async (userId: string, projectId: string, query: string, limit: number = 5) => {
     const embedding = await getEmbeddingString(query);
-    if (!embedding) {
-        // Fallback to simple matching if embeddings are not configured
+    // getEmbeddingString now always returns a string. Vector search always attempted first.
+    // Fallback to keyword matching only if vector search is not available.
+
+    if (!dbConfig.useVectorSearch) {
+        // Fallback to simple matching if vector search is not configured
         const stmt = db.prepare(`
-             SELECT key, value FROM ShortTermMemory 
-             WHERE userId = ? AND projectId = ? 
+             SELECT key, value FROM ShortTermMemory
+             WHERE userId = ? AND projectId = ?
              AND (key LIKE ? OR value LIKE ?)
              LIMIT ?
          `);
         const wildcard = `%${query}%`;
-        return stmt.all(userId, projectId, wildcard, wildcard, limit).map((row: any) => ({
+        const rows = stmt.all(userId, projectId, wildcard, wildcard, limit);
+        // Filter out zero-vector results to keep keyword fallback clean
+        return rows.map((row: any) => ({
             key: row.key,
             value: (() => { try { return JSON.parse(row.value); } catch { return null; } })()
         }));
     }
 
     // Vector search
-    const stmt = db.prepare(`
-         SELECT s.key, s.value, v.distance 
-         FROM vss_stm v
-         JOIN ShortTermMemory s ON v.rowid = s.rowid
-         WHERE s.userId = ? AND s.projectId = ?
-           AND vss_search(v.embedding, vss_search_params(?, ?))
-    `);
-    const results = stmt.all(userId, projectId, embedding, limit);
+    const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_stm' : 'vec_stm';
+    let results: any[];
+    if (dbConfig.vectorBackend === 'vss') {
+        const stmt = db.prepare(`
+             SELECT s.key, s.value, v.distance
+             FROM ${tableName} v
+             JOIN ShortTermMemory s ON v.rowid = s.rowid
+             WHERE s.userId = ? AND s.projectId = ?
+               AND vss_search(v.embedding, vss_search_params(?, ?))
+        `);
+        results = stmt.all(userId, projectId, embedding, limit);
+    } else {
+        const stmt = db.prepare(`
+             SELECT s.key, s.value, v.distance
+             FROM ${tableName} v
+             JOIN ShortTermMemory s ON v.rowid = s.rowid
+             WHERE s.userId = ? AND s.projectId = ?
+               AND v.embedding MATCH ? AND v.k = ?
+             ORDER BY v.distance
+        `);
+        results = stmt.all(userId, projectId, embedding, limit);
+    }
+    if (results.length === 0) {
+        // Vector search returned nothing — fall back to keyword search
+        const kwStmt = db.prepare(`
+             SELECT key, value FROM ShortTermMemory
+             WHERE userId = ? AND projectId = ?
+             AND (key LIKE ? OR value LIKE ?)
+             LIMIT ?
+        `);
+        const wildcard = `%${query}%`;
+        return kwStmt.all(userId, projectId, wildcard, wildcard, limit).map((row: any) => ({
+            key: row.key,
+            value: (() => { try { return JSON.parse(row.value); } catch { return null; } })()
+        }));
+    }
     return results.map((row: any) => ({
         key: row.key,
         value: (() => { try { return JSON.parse(row.value); } catch { return null; } })(),
@@ -811,7 +903,8 @@ export const deleteShortTermMemory = (userId: string, projectId: string, key: st
     const rowInfo = rowIdStmt.get(stmId) as { rowid: number } | undefined;
 
     if (rowInfo) {
-        db.prepare(`DELETE FROM vss_stm WHERE rowid = ?`).run(rowInfo.rowid);
+        const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_stm' : 'vec_stm';
+        db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(BigInt(rowInfo.rowid));
     }
 
     const stmt = db.prepare(`
@@ -826,8 +919,9 @@ export const clearSessionMemory = (userId: string, projectId: string) => {
     const idsStmt = db.prepare(`SELECT rowid FROM ShortTermMemory WHERE userId = ? AND projectId = ?`);
     const rows = idsStmt.all(userId, projectId) as { rowid: number }[];
 
-    const deleteVss = db.prepare(`DELETE FROM vss_stm WHERE rowid = ?`);
-    rows.forEach(r => deleteVss.run(r.rowid));
+    const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_stm' : 'vec_stm';
+    const deleteVss = db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`);
+    rows.forEach(r => deleteVss.run(BigInt(r.rowid)));
 
     const stmt = db.prepare(`
         DELETE FROM ShortTermMemory 
@@ -853,25 +947,29 @@ export const storeDocumentChunk = async (userId: string, projectId: string, docu
         const rowInfo = rowIdStmt.get(docId) as { rowid: number } | undefined;
         if (!rowInfo) return;
 
-        const vssStmt = db.prepare(`INSERT INTO vss_doc(rowid, embedding) VALUES (?, ?)`);
+        const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_doc' : 'vec_doc';
+        const vssStmt = db.prepare(`INSERT INTO ${tableName}(rowid, embedding) VALUES (?, ?)`);
+        const runId = BigInt(rowInfo.rowid);
         try {
-            vssStmt.run(rowInfo.rowid, embedding);
+            vssStmt.run(runId, embedding);
         } catch (e) {
-            db.prepare(`DELETE FROM vss_doc WHERE rowid = ?`).run(rowInfo.rowid);
-            vssStmt.run(rowInfo.rowid, embedding);
+            db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(runId);
+            vssStmt.run(runId, embedding);
         }
     }
 };
 
 export const searchDocumentChunks = async (userId: string, projectId: string, documentId: string, query: string, limit: number = 3) => {
     const embedding = await getEmbeddingString(query);
-    if (!embedding) {
+    // getEmbeddingString now always returns a string. Use vector search when available.
+
+    if (!dbConfig.useVectorSearch) {
         const stmt = db.prepare(`
-             SELECT chunkIndex, content FROM DocumentChunks 
+             SELECT chunkIndex, content FROM DocumentChunks
              WHERE userId = ? AND projectId = ? AND documentId = ?
              AND content LIKE ?
              LIMIT ?
-         `);
+          `);
         const wildcard = `%${query}%`;
         return stmt.all(userId, projectId, documentId, wildcard, limit).map((row: any) => ({
             chunkIndex: row.chunkIndex,
@@ -879,14 +977,42 @@ export const searchDocumentChunks = async (userId: string, projectId: string, do
         }));
     }
 
-    const stmt = db.prepare(`
-         SELECT d.chunkIndex, d.content, v.distance 
-         FROM vss_doc v
-         JOIN DocumentChunks d ON v.rowid = d.rowid
-         WHERE d.userId = ? AND d.projectId = ? AND d.documentId = ?
-           AND vss_search(v.embedding, vss_search_params(?, ?))
-    `);
-    const results = stmt.all(userId, projectId, documentId, embedding, limit);
+    const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_doc' : 'vec_doc';
+    let results: any[];
+    if (dbConfig.vectorBackend === 'vss') {
+        const stmt = db.prepare(`
+             SELECT d.chunkIndex, d.content, v.distance
+             FROM ${tableName} v
+             JOIN DocumentChunks d ON v.rowid = d.rowid
+             WHERE d.userId = ? AND d.projectId = ? AND d.documentId = ?
+               AND vss_search(v.embedding, vss_search_params(?, ?))
+        `);
+        results = stmt.all(userId, projectId, documentId, embedding, limit);
+    } else {
+        const stmt = db.prepare(`
+             SELECT d.chunkIndex, d.content, v.distance
+             FROM ${tableName} v
+             JOIN DocumentChunks d ON v.rowid = d.rowid
+             WHERE d.userId = ? AND d.projectId = ? AND d.documentId = ?
+               AND v.embedding MATCH ? AND v.k = ?
+             ORDER BY v.distance
+        `);
+        results = stmt.all(userId, projectId, documentId, embedding, limit);
+    }
+    if (results.length === 0) {
+        // Vector search returned nothing — fall back to keyword search
+        const kwStmt = db.prepare(`
+             SELECT chunkIndex, content FROM DocumentChunks
+             WHERE userId = ? AND projectId = ? AND documentId = ?
+             AND content LIKE ?
+             LIMIT ?
+        `);
+        const wildcard = `%${query}%`;
+        return kwStmt.all(userId, projectId, documentId, wildcard, limit).map((row: any) => ({
+            chunkIndex: row.chunkIndex,
+            content: row.content
+        }));
+    }
     return results.map((row: any) => ({
         chunkIndex: row.chunkIndex,
         content: row.content,
@@ -1108,11 +1234,12 @@ export const storeEmbedding = async (refTable: string, refId: string, userId: st
         if (rowInfo) {
             const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_embeddings' : 'vec_embeddings';
             const stmt = db.prepare(`INSERT INTO ${tableName}(rowid, embedding) VALUES (?, ?)`);
+            const runId = BigInt(rowInfo.rowid);
             try {
-                stmt.run(rowInfo.rowid, embedding);
+                stmt.run(runId, embedding);
             } catch (e) {
-                db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(rowInfo.rowid);
-                stmt.run(rowInfo.rowid, embedding);
+                db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(runId);
+                stmt.run(runId, embedding);
             }
         }
     }
@@ -1120,16 +1247,8 @@ export const storeEmbedding = async (refTable: string, refId: string, userId: st
 };
 
 export const searchEmbeddings = async (userId: string, query: string, refTable?: string, limit: number = 10): Promise<any[]> => {
+    // getEmbeddingString now always returns a string. Vector search is the primary path.
     const embedding = await getEmbeddingString(query);
-    if (!embedding) {
-        const pattern = `%${query}%`;
-        let sql = `SELECT * FROM Embeddings WHERE userId = ? AND content LIKE ?`;
-        const params: any[] = [userId, pattern];
-        if (refTable) { sql += ` AND refTable = ?`; params.push(refTable); }
-        sql += ` LIMIT ?`;
-        params.push(limit);
-        return db.prepare(sql).all(...params) as any[];
-    }
 
     if (!dbConfig.useVectorSearch) {
         const pattern = `%${query}%`;
@@ -1142,20 +1261,38 @@ export const searchEmbeddings = async (userId: string, query: string, refTable?:
     }
 
     const tableName = dbConfig.vectorBackend === 'vss' ? 'vss_embeddings' : 'vec_embeddings';
+
+    // Build SQL and params from scratch to avoid replace-based duplication bugs.
+    const whereParts: string[] = ['e.userId = ?'];
+    const params: any[] = [userId];
+    if (refTable) {
+        whereParts.push('e.refTable = ?');
+        params.push(refTable);
+    }
+
     let sql = '';
     if (dbConfig.vectorBackend === 'vss') {
-        sql = `SELECT e.*, v.distance FROM ${tableName} v JOIN Embeddings e ON v.rowid = e.rowid WHERE e.userId = ? AND vss_search(v.embedding, vss_search_params(?, ?))`;
+        whereParts.push('vss_search(v.embedding, vss_search_params(?, ?))');
+        params.push(embedding, limit);
+        sql = `SELECT e.*, v.distance FROM ${tableName} v JOIN Embeddings e ON v.rowid = e.rowid WHERE ${whereParts.join(' AND ')}`;
     } else {
-        sql = `SELECT e.*, distance as dist FROM ${tableName} v JOIN Embeddings e ON v.rowid = e.rowid WHERE e.userId = ? ORDER BY v.embedding <=> ? LIMIT ?`;
+        whereParts.push('v.embedding MATCH ?');
+        whereParts.push('v.k = ?');
+        params.push(embedding, limit);
+        sql = `SELECT e.*, v.distance as dist FROM ${tableName} v JOIN Embeddings e ON v.rowid = e.rowid WHERE ${whereParts.join(' AND ')} ORDER BY v.distance`;
     }
-    
-    const params: any[] = [userId, embedding, limit];
-    if (refTable) {
-        sql = sql.replace('WHERE e.userId', 'WHERE e.userId = ? AND e.refTable = ?');
-        params.splice(1, 0, refTable);
-    }
-    
+
     const rows = db.prepare(sql).all(...params);
+    if (rows.length === 0) {
+        // Vector search returned nothing — fall back to keyword search
+        const pattern = `%${query}%`;
+        let kwSql = `SELECT * FROM Embeddings WHERE userId = ? AND content LIKE ?`;
+        const kwParams: any[] = [userId, pattern];
+        if (refTable) { kwSql += ` AND refTable = ?`; kwParams.push(refTable); }
+        kwSql += ` LIMIT ?`;
+        kwParams.push(limit);
+        return db.prepare(kwSql).all(...kwParams) as any[];
+    }
     return rows.map((r: any) => ({ ...r, distance: r.distance || r.dist }));
 };
 
