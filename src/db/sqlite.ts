@@ -56,10 +56,12 @@ export const initSqlite = () => {
             console.error('SQLite vector search: using sqlite-vss');
         } catch (e) {
             console.error("Failed to load sqlite-vss:", e);
+            sqliteVss = null;
         }
-    } else if (sqliteVec) {
+    }
+    if (sqliteVec) {
         try {
-            db.loadExtension(sqliteVec.getVecLoadablePath());
+            db.loadExtension(sqliteVec.getLoadablePath());
             dbConfig.useVectorSearch = true;
             dbConfig.vectorBackend = 'vec';
             console.error('SQLite vector search: using sqlite-vec');
