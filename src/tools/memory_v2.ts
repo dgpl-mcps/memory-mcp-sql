@@ -229,7 +229,7 @@ export const memoryTool = {
             title: { type: "string", description: "Reminder title" },
             text: { type: "string", description: "Text to search in directly" },
             searchType: { type: "string", enum: ["semantic", "exact"], description: "Matching strategy (default: semantic)" },
-            minScore: { type: "number", description: "Minimum similarity score threshold (default: 0.9)" },
+            minScore: { type: "number", description: "Minimum similarity score threshold (default: 0.95)" },
             beforeLimit: { type: "number", description: "Lines of context to show before match (default: 2)" },
             afterLimit: { type: "number", description: "Lines of context to show after match (default: 2)" },
         },
@@ -2071,7 +2071,7 @@ export const memoryTool = {
                     }
                     
                     const searchType = args.searchType ?? "semantic";
-                    const minScore = Math.max(0.0, Math.min(1.0, Number(args.minScore ?? 1.0)));
+                    const minScore = Math.max(0.0, Math.min(1.0, Number(args.minScore ?? 0.95)));
                     const beforeLimit = Math.max(0, Math.min(50, Math.floor(Number(args.beforeLimit ?? 2))));
                     const afterLimit = Math.max(0, Math.min(50, Math.floor(Number(args.afterLimit ?? 2))));
 
