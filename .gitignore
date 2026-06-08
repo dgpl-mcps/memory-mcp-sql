@@ -44,3 +44,5 @@ Thumbs.db
 # Local config
 config_ths.ini
  MEMORY_TOOLS.md
+*.38444
+core.*
