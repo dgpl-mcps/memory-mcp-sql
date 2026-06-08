@@ -1,5 +1,5 @@
 ---
-name: memory-mcp
+name: memory-mcp-cyber-bye
 description: Graph-based memory MCP server with 9 consolidated tools, 8-phase auto-linking, persona tracking, emotional memory, adaptive learning, and knowledge graph entities.
 version: 1.0.5
 metadata:
