@@ -4,6 +4,16 @@
 // =============================================
 import { db, dbConfig, searchEmbeddings, storeEmbedding } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
+import { localEmbed, tokenize } from "../utils/local-embed.js";
+
+// Helper: Vector dot product (cosine similarity for L2 normalized vectors)
+function dotProduct(v1: Float32Array, v2: Float32Array): number {
+    let sum = 0;
+    for (let i = 0; i < v1.length; i++) {
+        sum += v1[i] * v2[i];
+    }
+    return sum;
+}
 
 // Intent detection patterns
 const INTENT_PATTERNS = {
@@ -189,7 +199,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -217,6 +227,11 @@ export const memoryTool = {
             pattern: { type: "string", description: "Pattern to learn" },
             reminderType: { type: "string", description: "Type of reminder" },
             title: { type: "string", description: "Reminder title" },
+            text: { type: "string", description: "Text to search in directly" },
+            searchType: { type: "string", enum: ["semantic", "exact"], description: "Matching strategy (default: semantic)" },
+            minScore: { type: "number", description: "Minimum similarity score threshold (default: 0.9)" },
+            beforeLimit: { type: "number", description: "Lines of context to show before match (default: 2)" },
+            afterLimit: { type: "number", description: "Lines of context to show after match (default: 2)" },
         },
         required: ["op", "userId"],
     },
@@ -2042,6 +2057,277 @@ export const memoryTool = {
                             normal: scored.filter((m: any) => m.importance >= 40 && m.importance < 60).length,
                             low: scored.filter((m: any) => m.importance < 40).length,
                             top10: scored.slice(0, 10)
+                        }) }] };
+                    }
+                }
+                
+                // =============================================
+                // SNIPPET_SEARCH: Search text and show surrounding context
+                // =============================================
+                case "snippet_search": {
+                    const { text, query } = args;
+                    if (!query) {
+                        return { content: [{ type: "text", text: "query required" }], isError: true };
+                    }
+                    
+                    const searchType = args.searchType ?? "semantic";
+                    const minScore = Math.max(0.0, Math.min(1.0, Number(args.minScore ?? 1.0)));
+                    const beforeLimit = Math.max(0, Math.min(50, Math.floor(Number(args.beforeLimit ?? 2))));
+                    const afterLimit = Math.max(0, Math.min(50, Math.floor(Number(args.afterLimit ?? 2))));
+
+                    if (text !== undefined && text !== null) {
+                        // Truncate text if extremely long to avoid performance issues
+                        let processedText = text;
+                        if (processedText.length > 150_000) {
+                            processedText = processedText.slice(0, 150_000);
+                        }
+                        
+                        let lines = processedText.split(/\r?\n/);
+                        if (lines.length > 2000) {
+                            lines = lines.slice(0, 2000);
+                        }
+                        
+                        const matchIndexes: number[] = [];
+                        const lineScores = new Map<number, number>();
+                        const qLower = query.toLowerCase();
+                        
+                        if (searchType === "exact") {
+                            for (let i = 0; i < lines.length; i++) {
+                                if (lines[i].toLowerCase().includes(qLower)) {
+                                    matchIndexes.push(i);
+                                    lineScores.set(i, 1.0);
+                                }
+                            }
+                        } else {
+                            const queryVec = localEmbed(query);
+                            const queryTokens = tokenize(query);
+                            
+                            for (let i = 0; i < lines.length; i++) {
+                                const trimmedLine = lines[i].trim();
+                                if (trimmedLine.length === 0) continue;
+                                
+                                const isExact = trimmedLine.toLowerCase().includes(qLower);
+                                let score = 0;
+                                if (isExact) {
+                                    score = 1.0;
+                                } else {
+                                    const lineVec = localEmbed(trimmedLine);
+                                    const semanticScore = dotProduct(queryVec, lineVec);
+                                    
+                                    const lineTokens = tokenize(trimmedLine);
+                                    let overlapScore = 0;
+                                    if (queryTokens.length > 0) {
+                                        const lineTokensSet = new Set(lineTokens);
+                                        let matchCount = 0;
+                                        for (const qt of queryTokens) {
+                                            if (lineTokensSet.has(qt)) {
+                                                matchCount++;
+                                            }
+                                        }
+                                        overlapScore = matchCount / queryTokens.length;
+                                    }
+                                    score = Math.max(semanticScore, overlapScore);
+                                }
+                                
+                                if (score >= minScore) {
+                                    matchIndexes.push(i);
+                                    lineScores.set(i, score);
+                                }
+                            }
+                        }
+
+                        if (matchIndexes.length === 0) {
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                query,
+                                searchType,
+                                minScore,
+                                snippets: []
+                            }) }] };
+                        }
+
+                        const ranges: { start: number; end: number; matches: number[] }[] = [];
+                        for (const matchIdx of matchIndexes) {
+                            const start = Math.max(0, matchIdx - beforeLimit);
+                            const end = Math.min(lines.length - 1, matchIdx + afterLimit);
+                            ranges.push({ start, end, matches: [matchIdx] });
+                        }
+
+                        ranges.sort((a, b) => a.start - b.start);
+                        const mergedRanges: typeof ranges = [];
+                        let currentRange = ranges[0];
+
+                        for (let i = 1; i < ranges.length; i++) {
+                            const nextRange = ranges[i];
+                            if (nextRange.start <= currentRange.end + 1) {
+                                currentRange.end = Math.max(currentRange.end, nextRange.end);
+                                currentRange.matches.push(...nextRange.matches);
+                            } else {
+                                mergedRanges.push(currentRange);
+                                currentRange = nextRange;
+                            }
+                        }
+                        mergedRanges.push(currentRange);
+
+                        const snippets = mergedRanges.map(range => {
+                            const snippetLines = [];
+                            for (let i = range.start; i <= range.end; i++) {
+                                const isMatch = range.matches.includes(i);
+                                const score = lineScores.get(i);
+                                const lineNum = i + 1;
+                                const prefix = isMatch ? `* ${lineNum}: ` : `  ${lineNum}: `;
+                                const suffix = isMatch && searchType === "semantic" && score !== undefined
+                                    ? ` (score: ${score.toFixed(3)})`
+                                    : "";
+                                snippetLines.push(`${prefix}${lines[i]}${suffix}`);
+                            }
+                            return {
+                                startLine: range.start + 1,
+                                endLine: range.end + 1,
+                                matchingLines: range.matches.map(m => m + 1),
+                                text: snippetLines.join("\n")
+                            };
+                        });
+
+                        return { content: [{ type: "text", text: JSON.stringify({
+                            success: true,
+                            query,
+                            searchType,
+                            minScore,
+                            snippets
+                        }) }] };
+                    } else {
+                        // Fallback: search database
+                        const matchingRecords: { id: string; content: string; refTable: string }[] = [];
+                        
+                        if (searchType === "exact") {
+                            const term = `%${query}%`;
+                            const memories = db.prepare(`
+                                SELECT id, content FROM LongTermMemory 
+                                WHERE userId = ? AND (content LIKE ? OR summary LIKE ?)
+                                LIMIT 5
+                            `).all(userId, term, term) as any[];
+                            matchingRecords.push(...memories.map(m => ({ id: m.id, content: m.content || "", refTable: "LongTermMemory" })));
+                        } else {
+                            const vectorResults = await searchEmbeddings(userId, query, "LongTermMemory", 5);
+                            if (vectorResults && vectorResults.length > 0) {
+                                matchingRecords.push(...vectorResults.map((r: any) => ({
+                                    id: r.refId,
+                                    content: r.content || "",
+                                    refTable: r.refTable || "LongTermMemory"
+                                })));
+                            }
+                        }
+
+                        const dbSnippets = [];
+                        for (const record of matchingRecords) {
+                            const recordLines = record.content.split(/\r?\n/);
+                            const recordMatchIndexes: number[] = [];
+                            const recordLineScores = new Map<number, number>();
+                            const qLower = query.toLowerCase();
+
+                            if (searchType === "exact") {
+                                for (let i = 0; i < recordLines.length; i++) {
+                                    if (recordLines[i].toLowerCase().includes(qLower)) {
+                                        recordMatchIndexes.push(i);
+                                        recordLineScores.set(i, 1.0);
+                                    }
+                                }
+                            } else {
+                                const queryVec = localEmbed(query);
+                                const queryTokens = tokenize(query);
+                                
+                                for (let i = 0; i < recordLines.length; i++) {
+                                    const trimmedLine = recordLines[i].trim();
+                                    if (trimmedLine.length === 0) continue;
+                                    
+                                    const isExact = trimmedLine.toLowerCase().includes(qLower);
+                                    let score = 0;
+                                    if (isExact) {
+                                        score = 1.0;
+                                    } else {
+                                        const lineVec = localEmbed(trimmedLine);
+                                        const semanticScore = dotProduct(queryVec, lineVec);
+                                        
+                                        const lineTokens = tokenize(trimmedLine);
+                                        let overlapScore = 0;
+                                        if (queryTokens.length > 0) {
+                                            const lineTokensSet = new Set(lineTokens);
+                                            let matchCount = 0;
+                                            for (const qt of queryTokens) {
+                                                if (lineTokensSet.has(qt)) {
+                                                    matchCount++;
+                                                }
+                                            }
+                                            overlapScore = matchCount / queryTokens.length;
+                                        }
+                                        score = Math.max(semanticScore, overlapScore);
+                                    }
+                                    
+                                    if (score >= minScore) {
+                                        recordMatchIndexes.push(i);
+                                        recordLineScores.set(i, score);
+                                    }
+                                }
+                            }
+
+                            if (recordMatchIndexes.length > 0) {
+                                const recordRanges: { start: number; end: number; matches: number[] }[] = [];
+                                for (const mIdx of recordMatchIndexes) {
+                                    const start = Math.max(0, mIdx - beforeLimit);
+                                    const end = Math.min(recordLines.length - 1, mIdx + afterLimit);
+                                    recordRanges.push({ start, end, matches: [mIdx] });
+                                }
+
+                                recordRanges.sort((a, b) => a.start - b.start);
+                                const recordMerged: typeof recordRanges = [];
+                                let current = recordRanges[0];
+                                for (let i = 1; i < recordRanges.length; i++) {
+                                    const next = recordRanges[i];
+                                    if (next.start <= current.end + 1) {
+                                        current.end = Math.max(current.end, next.end);
+                                        current.matches.push(...next.matches);
+                                    } else {
+                                        recordMerged.push(current);
+                                        current = next;
+                                    }
+                                }
+                                recordMerged.push(current);
+
+                                const recordSnippets = recordMerged.map(range => {
+                                    const snippetLines = [];
+                                    for (let i = range.start; i <= range.end; i++) {
+                                        const isMatch = range.matches.includes(i);
+                                        const score = recordLineScores.get(i);
+                                        const lineNum = i + 1;
+                                        const prefix = isMatch ? `* ${lineNum}: ` : `  ${lineNum}: `;
+                                        const suffix = isMatch && searchType === "semantic" && score !== undefined
+                                            ? ` (score: ${score.toFixed(3)})`
+                                            : "";
+                                        snippetLines.push(`${prefix}${recordLines[i]}${suffix}`);
+                                    }
+                                    return {
+                                        startLine: range.start + 1,
+                                        endLine: range.end + 1,
+                                        matchingLines: range.matches.map(m => m + 1),
+                                        text: snippetLines.join("\n")
+                                    };
+                                });
+
+                                dbSnippets.push({
+                                    id: record.id,
+                                    refTable: record.refTable,
+                                    snippets: recordSnippets
+                                });
+                            }
+                        }
+
+                        return { content: [{ type: "text", text: JSON.stringify({
+                            success: true,
+                            query,
+                            searchType,
+                            minScore,
+                            results: dbSnippets
                         }) }] };
                     }
                 }
