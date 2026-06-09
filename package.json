@@ -1,6 +1,6 @@
 {
   "name": "memory-mcp",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Graph-based memory MCP server",
   "main": "build/index.js",
   "type": "module",
