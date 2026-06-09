@@ -326,9 +326,9 @@ async function main() {
 
     // Test 6: Validation, trimming, and Case-insensitive name resolution
     try {
-        console.log("\n--- Test 6: Validation & Case-Insensitive Name Resolution ---");
+        console.log("\n--- Test 6: Validation, Whitespace Normalization & Case-Insensitive Name Resolution ---");
         
-        // Try creating with empty name
+        // 1. Try creating with empty name
         const resErr = await callMcp(server, "tools/call", {
             name: "memory",
             arguments: {
@@ -341,7 +341,7 @@ async function main() {
             }
         }, 60);
         
-        // Try linking with different casing (e.g. "VK" instead of "vk")
+        // 2. Try linking with different casing (e.g. "VK" instead of "vk")
         const relCase = await callMcp(server, "tools/call", {
             name: "memory",
             arguments: {
@@ -355,15 +355,61 @@ async function main() {
             }
         }, 61);
 
+        // 3. Create a contact with multiple spaces and leading/trailing padding
+        const resSp = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact",
+                contactOp: "create",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                name: "   vk   the    developer  ",
+                role: "coder"
+            }
+        }, 62);
+
+        // 4. Get the contact using collapsed-spaces and mixed case name
+        const resGet = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact",
+                contactOp: "get",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                name: "VK the DEVELOPER"
+            }
+        }, 63);
+
+        // 5. Link using mixed-case relation type with spacing
+        const relNorm = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact_graph",
+                graphOp: "link",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                fromId: "vk",
+                toId: "nandini",
+                relationType: "   WIFE-COLLABORATOR   "
+            }
+        }, 64);
+
         const pErr = JSON.parse(resErr.result.content[0].text);
         const pCase = JSON.parse(relCase.result.content[0].text);
+        const pSp = JSON.parse(resSp.result.content[0].text);
+        const pGet = JSON.parse(resGet.result.content[0].text);
+        const pNorm = JSON.parse(relNorm.result.content[0].text);
 
-        // resErr isError should be true because name is blank
-        if (resErr.result.isError && pCase.success && pCase.relation.relationType === "collaborator") {
-            console.log("✅ Test 6 Passed! Blocked empty name and resolved case-insensitive names correctly.");
+        // Assert all normalization and validations
+        if (resErr.result.isError && 
+            pCase.success && pCase.relation.relationType === "collaborator" &&
+            pSp.success && pSp.contact.name === "vk the developer" &&
+            pGet.success && pGet.contact.name === "vk the developer" &&
+            pNorm.success && pNorm.relation.relationType === "wife-collaborator") {
+            console.log("✅ Test 6 Passed! Blocked empty name, resolved case-insensitive names, normalized spaces, and relationship types correctly.");
             pass++;
         } else {
-            console.log("❌ Test 6 Failed. Outputs:", resErr, pCase);
+            console.log("❌ Test 6 Failed. Outputs:", pErr, pCase, pSp, pGet, pNorm);
             fail++;
         }
     } catch (err) {

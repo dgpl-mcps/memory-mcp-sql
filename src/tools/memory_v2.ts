@@ -2240,10 +2240,11 @@ export const memoryTool = {
                         const matchingRecords: { id: string; content: string; refTable: string }[] = [];
                         
                         if (searchType === "exact") {
-                            const term = `%${cleanedQuery}%`;
+                            const escaped = cleanedQuery.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+                            const term = `%${escaped}%`;
                             const memories = db.prepare(`
                                 SELECT id, content FROM LongTermMemory 
-                                WHERE userId = ? AND (content LIKE ? OR summary LIKE ?)
+                                WHERE userId = ? AND (content LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')
                                 LIMIT 5
                             `).all(userId, term, term) as any[];
                             matchingRecords.push(...memories.map(m => ({ id: m.id, content: m.content || "", refTable: "LongTermMemory" })));
@@ -2386,7 +2387,7 @@ export const memoryTool = {
                             if (!name || !name.trim()) {
                                 return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "name required for creating contact" }) }], isError: true };
                             }
-                            const trimmedName = name.trim();
+                            const trimmedName = name.trim().replace(/\s+/g, " ");
                             
                             // Check if a contact with this name already exists in this project
                             const existing = db.prepare(`
@@ -2459,7 +2460,7 @@ export const memoryTool = {
                             // Update base fields in Entities table if provided
                             const sets = ["updatedAt = CURRENT_TIMESTAMP"];
                             const params = [];
-                            if (name !== undefined) { sets.push("name = ?"); params.push(name); }
+                            if (name !== undefined) { sets.push("name = ?"); params.push(name.trim().replace(/\s+/g, " ")); }
                             if (email !== undefined) { sets.push("email = ?"); params.push(email); }
                             if (phone !== undefined) { sets.push("phone = ?"); params.push(phone); }
                             if (role !== undefined) { sets.push("role = ?"); params.push(role); }
@@ -2535,7 +2536,7 @@ export const memoryTool = {
                             if (contactId) {
                                 contact = getEntity(contactId);
                             } else if (name) {
-                                const trimmed = name.trim();
+                                const trimmed = name.trim().replace(/\s+/g, " ");
                                 const row = db.prepare(`
                                     SELECT * FROM Entities 
                                     WHERE userId = ? AND projectId = ? AND LOWER(name) = LOWER(?)
@@ -2619,7 +2620,7 @@ export const memoryTool = {
                     // Helper to resolve name or ID to Entity
                     const resolveEntity = (idOrName: string): any => {
                         if (!idOrName || !idOrName.trim()) return null;
-                        const trimmed = idOrName.trim();
+                        const trimmed = idOrName.trim().replace(/\s+/g, " ");
                         // First try by ID
                         const ent = getEntity(trimmed);
                         if (ent) return ent;
@@ -2654,11 +2655,13 @@ export const memoryTool = {
                                 return { content: [{ type: "text", text: JSON.stringify({ success: false, message: `Target contact "${toId}" not found` }) }], isError: true };
                             }
                             
+                            const cleanedRelationType = relationType.trim().toLowerCase();
+                            
                             // Check if this specific relationship already exists to avoid exact duplicates
                             const existing = db.prepare(`
                                 SELECT * FROM Relations 
                                 WHERE userId = ? AND projectId = ? AND fromId = ? AND toId = ? AND relationType = ?
-                            `).get(userId, projectId || "", fromEnt.id, toEnt.id, relationType) as any;
+                            `).get(userId, projectId || "", fromEnt.id, toEnt.id, cleanedRelationType) as any;
                             
                             if (existing) {
                                 return { content: [{ type: "text", text: JSON.stringify({
@@ -2688,7 +2691,7 @@ export const memoryTool = {
                                 }
                             }
                             
-                            const relation = createRelation(userId, projectId || "", fromEnt.id, toEnt.id, relationType, parsedProps);
+                            const relation = createRelation(userId, projectId || "", fromEnt.id, toEnt.id, cleanedRelationType, parsedProps);
                             return { content: [{ type: "text", text: JSON.stringify({
                                 success: true,
                                 message: "Relationship created successfully",
@@ -2714,11 +2717,12 @@ export const memoryTool = {
                                 return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "Source or target contact not found" }) }], isError: true };
                             }
                             
+                            const cleanedRelationType = relationType ? relationType.trim().toLowerCase() : undefined;
                             let sql = `DELETE FROM Relations WHERE userId = ? AND projectId = ? AND fromId = ? AND toId = ?`;
                             const params = [userId, projectId || "", fromEnt.id, toEnt.id];
-                            if (relationType) {
+                            if (cleanedRelationType) {
                                 sql += ` AND relationType = ?`;
-                                params.push(relationType);
+                                params.push(cleanedRelationType);
                             }
                             
                             const res = db.prepare(sql).run(...params);
@@ -2749,12 +2753,13 @@ export const memoryTool = {
                                 resolvedToId = toEnt.id;
                             }
                             
+                            const cleanedRelationType = relationType ? relationType.trim().toLowerCase() : undefined;
                             const relations = getRelations(
                                 userId,
                                 projectId || "",
                                 resolvedFromId,
                                 resolvedToId,
-                                relationType
+                                cleanedRelationType
                             );
                             
                             return { content: [{ type: "text", text: JSON.stringify({

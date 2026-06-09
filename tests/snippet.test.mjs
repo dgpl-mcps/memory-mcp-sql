@@ -246,6 +246,69 @@ Line 9: And they all lived happily ever after.`;
         fail++;
     }
 
+    // Test 5: Literal wildcard search escaping in Database fallback
+    try {
+        console.log("\n--- Test 5: Database exact search wildcard escaping ---");
+        
+        // Insert memories
+        await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "remember",
+                userId: TEST_USER,
+                sessionId: TEST_PROJECT,
+                userMessage: "Database progress is at 99% completed.",
+                agentMessage: "Noted database progress 99%."
+            }
+        }, 60);
+
+        await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "remember",
+                userId: TEST_USER,
+                sessionId: TEST_PROJECT,
+                userMessage: "Database progress is at 995 completed.",
+                agentMessage: "Noted database progress 995."
+            }
+        }, 61);
+
+        // Search for exact "99%"
+        const res = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "snippet_search",
+                userId: TEST_USER,
+                query: "99%",
+                searchType: "exact"
+            }
+        }, 62);
+
+        const parsed = JSON.parse(res.result.content[0].text);
+        
+        if (parsed.success && parsed.results && parsed.results.length > 0) {
+            const matches = parsed.results;
+            // It should match the 99% memory but NOT 995 memory (since % is treated literally, not as wildcard)
+            const matchedContents = matches.map(r => r.snippets[0]?.text || "");
+            const hasLiteralMatch = matchedContents.some(txt => txt.includes("99%"));
+            const hasWildcardMatch = matchedContents.some(txt => txt.includes("995"));
+
+            if (hasLiteralMatch && !hasWildcardMatch) {
+                console.log("✅ Test 5 Passed! Literal wildcards (%) in exact search escaped successfully in DB queries.");
+                pass++;
+            } else {
+                console.log("❌ Test 5 Failed. Mixed or incorrect literal matching results:", matchedContents);
+                fail++;
+            }
+        } else {
+            console.log("❌ Test 5 Failed. No results matched. Output:\n", res.result.content[0].text);
+            fail++;
+        }
+    } catch (err) {
+        console.log("❌ Test 5 Error:", err.message);
+        fail++;
+    }
+
     console.log(`\n=== Snippet Search Results: ${pass} pass, ${fail} fail ===`);
     if (fail > 0) {
         console.error("\n--- Server Stderr Logs ---");
