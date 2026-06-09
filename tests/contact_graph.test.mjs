@@ -419,6 +419,58 @@ async function main() {
         fail++;
     }
 
+    // Test 9: Multi-path connection traversals & NaN inputs in search
+    try {
+        console.log("\n--- Test 9: Multi-Path Traversals & NaN Search Parameter Checks ---");
+
+        // 1. Path search between vk and nandini with depth 1
+        // Since there are 4 relationships (wife, employe, friend, collaborator)
+        // they should all be returned as distinct paths of length 1!
+        const resMultiPath = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact_graph",
+                graphOp: "path",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                fromId: "vk",
+                toId: "nandini",
+                depth: 1
+            }
+        }, 90);
+
+        // 2. Snippet search with NaN inputs
+        const resSearchNaN = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "snippet_search",
+                userId: TEST_USER,
+                text: "Line 1\nLine 2\nLine 3\nLine 4",
+                query: "Line 2",
+                searchType: "semantic",
+                minScore: "NaN", // String NaN
+                beforeLimit: "NaN",
+                afterLimit: "NaN"
+            }
+        }, 91);
+
+        const pMultiPath = JSON.parse(resMultiPath.result.content[0].text);
+        const pSearchNaN = JSON.parse(resSearchNaN.result.content[0].text);
+
+        // Under path-level visited queues, there should be multiple paths found
+        if (pMultiPath.success && pMultiPath.paths.length > 1 && pSearchNaN.success && pSearchNaN.snippets.length > 0) {
+            console.log(`✅ Test 9 Passed! Multi-path resolved successfully (found ${pMultiPath.paths.length} alternative routes).`);
+            console.log(`   NaN parameter inputs sanitized and snippet matched:\n`, pSearchNaN.snippets[0]?.text);
+            pass++;
+        } else {
+            console.log("❌ Test 9 Failed. Outputs:", pMultiPath, pSearchNaN);
+            fail++;
+        }
+    } catch (err) {
+        console.log("❌ Test 9 Error:", err.message);
+        fail++;
+    }
+
     // Test 8: Deletion cascades & unreachable paths
     try {
         console.log("\n--- Test 8: Deletion Cascades & Unreachable Paths ---");

@@ -2085,9 +2085,18 @@ export const memoryTool = {
                     }
                     
                     const searchType = args.searchType ?? "semantic";
-                    const minScore = Math.max(0.0, Math.min(1.0, Number(args.minScore ?? 0.95)));
-                    const beforeLimit = Math.max(0, Math.min(50, Math.floor(Number(args.beforeLimit ?? 2))));
-                    const afterLimit = Math.max(0, Math.min(50, Math.floor(Number(args.afterLimit ?? 2))));
+                    
+                    let minScore = Number(args.minScore ?? 0.95);
+                    if (isNaN(minScore)) minScore = 0.95;
+                    minScore = Math.max(0.0, Math.min(1.0, minScore));
+                    
+                    let beforeLimit = Math.floor(Number(args.beforeLimit ?? 2));
+                    if (isNaN(beforeLimit)) beforeLimit = 2;
+                    beforeLimit = Math.max(0, Math.min(50, beforeLimit));
+                    
+                    let afterLimit = Math.floor(Number(args.afterLimit ?? 2));
+                    if (isNaN(afterLimit)) afterLimit = 2;
+                    afterLimit = Math.max(0, Math.min(50, afterLimit));
 
                     if (text !== undefined && text !== null) {
                         // Truncate text if extremely long to avoid performance issues
@@ -2747,12 +2756,13 @@ export const memoryTool = {
                                 adjacencyList[r.toId].push({ to: r.fromId, type: r.relationType, id: r.id });
                             });
                             
-                            const queue: { current: string; path: any[] }[] = [{ current: fromEnt.id, path: [] }];
-                            const visited = new Set<string>([fromEnt.id]);
+                            const queue: { current: string; path: any[]; visited: Set<string> }[] = [
+                                { current: fromEnt.id, path: [], visited: new Set([fromEnt.id]) }
+                            ];
                             const foundPaths: any[] = [];
                             
                             while (queue.length > 0) {
-                                const { current, path } = queue.shift()!;
+                                const { current, path, visited } = queue.shift()!;
                                 
                                 if (current === toEnt.id) {
                                     foundPaths.push(path);
@@ -2764,10 +2774,12 @@ export const memoryTool = {
                                 const neighbors = adjacencyList[current] || [];
                                 for (const n of neighbors) {
                                     if (!visited.has(n.to)) {
-                                        visited.add(n.to);
+                                        const nextVisited = new Set(visited);
+                                        nextVisited.add(n.to);
                                         queue.push({
                                             current: n.to,
-                                            path: [...path, { from: current, to: n.to, type: n.type, relationId: n.id }]
+                                            path: [...path, { from: current, to: n.to, type: n.type, relationId: n.id }],
+                                            visited: nextVisited
                                         });
                                     }
                                 }
