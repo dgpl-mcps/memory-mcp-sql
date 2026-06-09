@@ -2080,11 +2080,16 @@ export const memoryTool = {
                 // =============================================
                 case "snippet_search": {
                     const { text, query } = args;
-                    if (!query || !query.trim()) {
+                    if (!query || typeof query !== "string" || !query.trim()) {
                         return { content: [{ type: "text", text: "query required" }], isError: true };
                     }
                     
-                    const searchType = args.searchType ?? "semantic";
+                    let cleanedQuery = query.trim().replace(/\s+/g, " ");
+                    if (cleanedQuery.length > 500) {
+                        cleanedQuery = cleanedQuery.slice(0, 500);
+                    }
+                    
+                    const searchType = (args.searchType === "exact") ? "exact" : "semantic";
                     
                     let minScore = Number(args.minScore ?? 0.95);
                     if (isNaN(minScore)) minScore = 0.95;
@@ -2099,20 +2104,31 @@ export const memoryTool = {
                     afterLimit = Math.max(0, Math.min(50, afterLimit));
 
                     if (text !== undefined && text !== null) {
-                        // Truncate text if extremely long to avoid performance issues
-                        let processedText = text;
-                        if (processedText.length > 150_000) {
-                            processedText = processedText.slice(0, 150_000);
+                        const processedText = String(text);
+                        if (!processedText.trim()) {
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                query: cleanedQuery,
+                                searchType,
+                                minScore,
+                                snippets: []
+                            }) }] };
                         }
                         
-                        let lines = processedText.split(/\r?\n/);
+                        // Truncate text if extremely long to avoid performance issues
+                        let sliceText = processedText;
+                        if (sliceText.length > 150_000) {
+                            sliceText = sliceText.slice(0, 150_000);
+                        }
+                        
+                        let lines = sliceText.split(/\r?\n/);
                         if (lines.length > 2000) {
                             lines = lines.slice(0, 2000);
                         }
                         
                         const matchIndexes: number[] = [];
                         const lineScores = new Map<number, number>();
-                        const qLower = query.toLowerCase();
+                        const qLower = cleanedQuery.toLowerCase();
                         
                         if (searchType === "exact") {
                             for (let i = 0; i < lines.length; i++) {
@@ -2122,8 +2138,8 @@ export const memoryTool = {
                                 }
                             }
                         } else {
-                            const queryVec = localEmbed(query);
-                            const queryTokens = tokenize(query);
+                            const queryVec = localEmbed(cleanedQuery);
+                            const queryTokens = tokenize(cleanedQuery);
                             
                             for (let i = 0; i < lines.length; i++) {
                                 const trimmedLine = lines[i].trim();
@@ -2162,7 +2178,7 @@ export const memoryTool = {
                         if (matchIndexes.length === 0) {
                             return { content: [{ type: "text", text: JSON.stringify({
                                 success: true,
-                                query,
+                                query: cleanedQuery,
                                 searchType,
                                 minScore,
                                 snippets: []
@@ -2214,7 +2230,7 @@ export const memoryTool = {
 
                         return { content: [{ type: "text", text: JSON.stringify({
                             success: true,
-                            query,
+                            query: cleanedQuery,
                             searchType,
                             minScore,
                             snippets
@@ -2224,7 +2240,7 @@ export const memoryTool = {
                         const matchingRecords: { id: string; content: string; refTable: string }[] = [];
                         
                         if (searchType === "exact") {
-                            const term = `%${query}%`;
+                            const term = `%${cleanedQuery}%`;
                             const memories = db.prepare(`
                                 SELECT id, content FROM LongTermMemory 
                                 WHERE userId = ? AND (content LIKE ? OR summary LIKE ?)
@@ -2232,7 +2248,7 @@ export const memoryTool = {
                             `).all(userId, term, term) as any[];
                             matchingRecords.push(...memories.map(m => ({ id: m.id, content: m.content || "", refTable: "LongTermMemory" })));
                         } else {
-                            const vectorResults = await searchEmbeddings(userId, query, "LongTermMemory", 5);
+                            const vectorResults = await searchEmbeddings(userId, cleanedQuery, "LongTermMemory", 5);
                             if (vectorResults && vectorResults.length > 0) {
                                 matchingRecords.push(...vectorResults.map((r: any) => ({
                                     id: r.refId,
@@ -2247,7 +2263,7 @@ export const memoryTool = {
                             const recordLines = record.content.split(/\r?\n/);
                             const recordMatchIndexes: number[] = [];
                             const recordLineScores = new Map<number, number>();
-                            const qLower = query.toLowerCase();
+                            const qLower = cleanedQuery.toLowerCase();
 
                             if (searchType === "exact") {
                                 for (let i = 0; i < recordLines.length; i++) {
@@ -2257,8 +2273,8 @@ export const memoryTool = {
                                     }
                                 }
                             } else {
-                                const queryVec = localEmbed(query);
-                                const queryTokens = tokenize(query);
+                                const queryVec = localEmbed(cleanedQuery);
+                                const queryTokens = tokenize(cleanedQuery);
                                 
                                 for (let i = 0; i < recordLines.length; i++) {
                                     const trimmedLine = recordLines[i].trim();
@@ -2347,7 +2363,7 @@ export const memoryTool = {
 
                         return { content: [{ type: "text", text: JSON.stringify({
                             success: true,
-                            query,
+                            query: cleanedQuery,
                             searchType,
                             minScore,
                             results: dbSnippets
@@ -2389,8 +2405,25 @@ export const memoryTool = {
                                 }) }] };
                             }
                             
+                            // Sanitize properties input
+                            let parsedProps: Record<string, any> = {};
+                            if (typeof properties === "object" && properties !== null) {
+                                parsedProps = properties;
+                            } else if (typeof properties === "string") {
+                                try {
+                                    const parsed = JSON.parse(properties);
+                                    if (typeof parsed === "object" && parsed !== null) {
+                                        parsedProps = parsed;
+                                    } else {
+                                        parsedProps = { value: properties };
+                                    }
+                                } catch {
+                                    parsedProps = { raw: properties };
+                                }
+                            }
+                            
                             // Create the entity
-                            const contact = createEntity(userId, projectId || "", entityType, trimmedName, properties, userId);
+                            const contact = createEntity(userId, projectId || "", entityType, trimmedName, parsedProps, userId);
                             
                             // Also update email, phone, role if provided
                             if (email !== undefined || phone !== undefined || role !== undefined) {
@@ -2432,10 +2465,26 @@ export const memoryTool = {
                             if (role !== undefined) { sets.push("role = ?"); params.push(role); }
                             
                             if (properties !== undefined) {
+                                let parsedProps: Record<string, any> = {};
+                                if (typeof properties === "object" && properties !== null) {
+                                    parsedProps = properties;
+                                } else if (typeof properties === "string") {
+                                    try {
+                                        const parsed = JSON.parse(properties);
+                                        if (typeof parsed === "object" && parsed !== null) {
+                                            parsedProps = parsed;
+                                        } else {
+                                            parsedProps = { value: properties };
+                                        }
+                                    } catch {
+                                        parsedProps = { raw: properties };
+                                    }
+                                }
+                                
                                 // Merge properties
                                 const mergedProps = {
                                     ...existing.properties,
-                                    ...properties
+                                    ...parsedProps
                                 };
                                 sets.push("properties = ?");
                                 params.push(JSON.stringify(mergedProps));
@@ -2486,10 +2535,11 @@ export const memoryTool = {
                             if (contactId) {
                                 contact = getEntity(contactId);
                             } else if (name) {
+                                const trimmed = name.trim();
                                 const row = db.prepare(`
                                     SELECT * FROM Entities 
-                                    WHERE userId = ? AND projectId = ? AND name = ?
-                                `).get(userId, projectId || "", name) as any;
+                                    WHERE userId = ? AND projectId = ? AND LOWER(name) = LOWER(?)
+                                `).get(userId, projectId || "", trimmed) as any;
                                 if (row) {
                                     contact = {
                                         ...row,
@@ -2621,7 +2671,24 @@ export const memoryTool = {
                                 }) }] };
                             }
                             
-                            const relation = createRelation(userId, projectId || "", fromEnt.id, toEnt.id, relationType, properties);
+                            // Sanitize properties input
+                            let parsedProps: Record<string, any> = {};
+                            if (typeof properties === "object" && properties !== null) {
+                                parsedProps = properties;
+                            } else if (typeof properties === "string") {
+                                try {
+                                    const parsed = JSON.parse(properties);
+                                    if (typeof parsed === "object" && parsed !== null) {
+                                        parsedProps = parsed;
+                                    } else {
+                                        parsedProps = { value: properties };
+                                    }
+                                } catch {
+                                    parsedProps = { raw: properties };
+                                }
+                            }
+                            
+                            const relation = createRelation(userId, projectId || "", fromEnt.id, toEnt.id, relationType, parsedProps);
                             return { content: [{ type: "text", text: JSON.stringify({
                                 success: true,
                                 message: "Relationship created successfully",
@@ -2743,6 +2810,11 @@ export const memoryTool = {
                                 return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "Source or target contact not found" }) }], isError: true };
                             }
                             
+                            // Safe depth parsing and clamping
+                            let parsedDepth = Math.floor(Number(depth ?? 3));
+                            if (isNaN(parsedDepth)) parsedDepth = 3;
+                            parsedDepth = Math.max(1, Math.min(10, parsedDepth));
+                            
                             // BFS pathfinding up to depth
                             const allRelations = getRelations(userId, projectId || "");
                             const adjacencyList: Record<string, { to: string; type: string; id: string }[]> = {};
@@ -2766,14 +2838,17 @@ export const memoryTool = {
                                 
                                 if (current === toEnt.id) {
                                     foundPaths.push(path);
-                                    continue;
+                                    if (path.length > 0) {
+                                        continue;
+                                    }
                                 }
                                 
-                                if (path.length >= depth) continue;
+                                if (path.length >= parsedDepth) continue;
                                 
                                 const neighbors = adjacencyList[current] || [];
                                 for (const n of neighbors) {
-                                    if (!visited.has(n.to)) {
+                                    const isCompletingCycle = (n.to === toEnt.id && (path.length > 0 || n.to === current));
+                                    if (!visited.has(n.to) || isCompletingCycle) {
                                         const nextVisited = new Set(visited);
                                         nextVisited.add(n.to);
                                         queue.push({

@@ -408,8 +408,16 @@ async function main() {
         const pPathSelf = JSON.parse(pathSelf.result.content[0].text);
 
         if (pSelf1.success && pPathSelf.success && pPathSelf.paths.length > 0 && pPathSelf.paths[0].length === 0) {
-            console.log("✅ Test 7 Passed! Self-relationship created and loop path resolved without infinite traversal.");
-            pass++;
+            console.log(`✅ Test 7 Passed! Self-relationship created and loop path resolved without infinite traversal.`);
+            console.log(`   Found ${pPathSelf.paths.length} total paths for vk -> vk (including loops).`);
+            const loops = pPathSelf.paths.filter(p => p.length > 0);
+            if (loops.length > 0) {
+                console.log(`   Found loop: ${loops[0].map(step => `${step.from} -[${step.type}]-> ${step.to}`).join(" | ")}`);
+                pass++;
+            } else {
+                console.log("❌ Test 7 Failed. Expected to find loop paths of length > 0, but got none.");
+                fail++;
+            }
         } else {
             console.log("❌ Test 7 Failed. Outputs:", pSelf1, pPathSelf);
             fail++;
