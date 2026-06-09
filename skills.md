@@ -66,6 +66,9 @@ Each tool has an `op` parameter to specify the operation.
 | backup | Export memories to JSON |
 | restore | Import memories from backup |
 | importance | Memory importance scoring |
+| snippet_search | Exact/semantic line search with context | query, text, searchType, beforeLimit, afterLimit |
+| contact | Unified contact CRUD (Person/Bot/Org) | contactOp, name, role, email, phone, properties |
+| contact_graph | Relationship mapping & path traversal | graphOp, fromId, toId, relationType, properties, depth |
 
 ---
 

@@ -6,7 +6,7 @@
 
 | # | Tool | Operations | Description |
 |---|------|------------|-------------|
-| 1 | `memory` | 15 ops | Store, search, manage memories |
+| 1 | `memory` | 18 ops | Store, search, manage memories |
 | 2 | `entity` | 5 ops | Knowledge graph entities |
 | 3 | `relation` | 3 ops | Entity relationships |
 | 4 | `short_term` | 6 ops | Fast KV storage |
@@ -20,7 +20,7 @@
 
 ## Tool Details
 
-### 1. memory (15 operations)
+### 1. memory (18 operations)
 
 | Op | Description |
 |----|-------------|
@@ -39,12 +39,18 @@
 | trim | Smart trimming |
 | analytics | Session analytics |
 | link | Link memories |
+| snippet_search | Exact & Semantic search with context |
+| contact | Unified contact CRUD (Person/Bot/Org) |
+| contact_graph | Relationship mapping & path traversal |
 
 **Example:**
 ```json
 { "op": "remember", "userId": "u1", "userMessage": "Q?", "agentMessage": "A!" }
 { "op": "recall", "userId": "u1", "query": "deadline" }
 { "op": "stats", "userId": "u1" }
+{ "op": "snippet_search", "userId": "u1", "query": "system error", "searchType": "exact" }
+{ "op": "contact", "contactOp": "create", "userId": "u1", "name": "vk", "role": "founder" }
+{ "op": "contact_graph", "graphOp": "link", "userId": "u1", "fromId": "vk", "toId": "nandini", "relationType": "wife" }
 ```
 
 ---

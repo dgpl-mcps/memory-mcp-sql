@@ -38,7 +38,7 @@ The memory MCP exposes **9 tools**, each with an `op` (operation) parameter:
 
 | Tool | Prefix | Purpose | Operations |
 |------|--------|---------|------------|
-| `memory__memory` | `memory_` | Core memory store & search | remember, recall, search, context, stats, health, decay, boost, pin, inspect, export, import, trim, suggest, remind, dedup, backup, restore |
+| `memory__memory` | `memory_` | Core memory store & search | remember, recall, search, context, stats, health, decay, boost, pin, inspect, export, import, trim, suggest, remind, dedup, backup, restore, snippet_search, contact, contact_graph |
 | `memory__entity` | `entity_` | Knowledge graph entities | create, read, update, delete, search |
 | `memory__relation` | `relation_` | Entity relationships | create, delete, search |
 | `memory__short_term` | `short_term_` | Fast KV storage | set, get, list, delete, clear, search |
@@ -96,6 +96,34 @@ Auto-features: intent detection, entity extraction (@mentions, CamelCase, URLs),
 { "op": "persona", "userId": "u1", "traits": {"creative": true}, "style": "friendly" }
 { "op": "learn", "userId": "u1", "type": "work", "pattern": "prefers morning" }
 ```
+
+#### Snippet Search (Exact & Semantic with context)
+```json
+{
+  "op": "snippet_search",
+  "userId": "u1",
+  "text": "Line 1: system boot\nLine 2: loading config...",
+  "query": "system boot",
+  "searchType": "exact",
+  "beforeLimit": 1,
+  "afterLimit": 1
+}
+```
+*Supports exact/semantic matches, parameter clamping, whitespace collapsing, and SQL wildcard escaping in database fallback.*
+
+#### Unified Contact CRUD
+```json
+{ "op": "contact", "contactOp": "create", "userId": "u1", "name": "vk", "role": "founder", "properties": {"status": "active"} }
+{ "op": "contact", "contactOp": "get", "userId": "u1", "name": "VK" }
+```
+*Standardizes contact management with space-collapsed names, case-insensitive retrievals, and properties sanitization.*
+
+#### Unified Contact Graph & Path Traversal
+```json
+{ "op": "contact_graph", "graphOp": "link", "userId": "u1", "fromId": "vk", "toId": "nandini", "relationType": "wife" }
+{ "op": "contact_graph", "graphOp": "path", "userId": "u1", "fromId": "vk", "toId": "vk", "depth": 3 }
+```
+*Manages relationships with lowercase-normalized edge types, per-path visited tracking, and loop/cycle discovery.*
 
 ---
 
