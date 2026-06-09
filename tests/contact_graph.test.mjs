@@ -324,6 +324,171 @@ async function main() {
         fail++;
     }
 
+    // Test 6: Validation, trimming, and Case-insensitive name resolution
+    try {
+        console.log("\n--- Test 6: Validation & Case-Insensitive Name Resolution ---");
+        
+        // Try creating with empty name
+        const resErr = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact",
+                contactOp: "create",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                name: "   ",
+                role: "invalid"
+            }
+        }, 60);
+        
+        // Try linking with different casing (e.g. "VK" instead of "vk")
+        const relCase = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact_graph",
+                graphOp: "link",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                fromId: "VK", // different casing!
+                toId: "Nandini", // different casing!
+                relationType: "collaborator"
+            }
+        }, 61);
+
+        const pErr = JSON.parse(resErr.result.content[0].text);
+        const pCase = JSON.parse(relCase.result.content[0].text);
+
+        // resErr isError should be true because name is blank
+        if (resErr.result.isError && pCase.success && pCase.relation.relationType === "collaborator") {
+            console.log("✅ Test 6 Passed! Blocked empty name and resolved case-insensitive names correctly.");
+            pass++;
+        } else {
+            console.log("❌ Test 6 Failed. Outputs:", resErr, pCase);
+            fail++;
+        }
+    } catch (err) {
+        console.log("❌ Test 6 Error:", err.message);
+        fail++;
+    }
+
+    // Test 7: Loop connections (self-relationships)
+    try {
+        console.log("\n--- Test 7: Self-Relationships & Loop Paths ---");
+        
+        // Link vk to vk
+        const relSelf1 = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact_graph",
+                graphOp: "link",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                fromId: "vk",
+                toId: "vk",
+                relationType: "self-reference",
+                properties: { note: "loop relation" }
+            }
+        }, 70);
+
+        // Path search vk to vk (should terminate immediately with length 0)
+        const pathSelf = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact_graph",
+                graphOp: "path",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                fromId: "vk",
+                toId: "vk",
+                depth: 3
+            }
+        }, 71);
+
+        const pSelf1 = JSON.parse(relSelf1.result.content[0].text);
+        const pPathSelf = JSON.parse(pathSelf.result.content[0].text);
+
+        if (pSelf1.success && pPathSelf.success && pPathSelf.paths.length > 0 && pPathSelf.paths[0].length === 0) {
+            console.log("✅ Test 7 Passed! Self-relationship created and loop path resolved without infinite traversal.");
+            pass++;
+        } else {
+            console.log("❌ Test 7 Failed. Outputs:", pSelf1, pPathSelf);
+            fail++;
+        }
+    } catch (err) {
+        console.log("❌ Test 7 Error:", err.message);
+        fail++;
+    }
+
+    // Test 8: Deletion cascades & unreachable paths
+    try {
+        console.log("\n--- Test 8: Deletion Cascades & Unreachable Paths ---");
+        
+        // Create an isolated contact
+        await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact",
+                contactOp: "create",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                name: "isolated-contact"
+            }
+        }, 80);
+
+        // Find path between vk and isolated-contact (should return no paths)
+        const resPath = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact_graph",
+                graphOp: "path",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                fromId: "vk",
+                toId: "isolated-contact",
+                depth: 3
+            }
+        }, 81);
+
+        // Delete contact vk
+        const resDel = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact",
+                contactOp: "delete",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                contactId: vkId
+            }
+        }, 82);
+
+        // Retrieve relations (should be 0 because vk was deleted and cascade removed all relations)
+        const resRel = await callMcp(server, "tools/call", {
+            name: "memory",
+            arguments: {
+                op: "contact_graph",
+                graphOp: "get_relations",
+                userId: TEST_USER,
+                projectId: TEST_PROJECT,
+                fromId: "vk"
+            }
+        }, 83);
+
+        const pPath = JSON.parse(resPath.result.content[0].text);
+        const pDel = JSON.parse(resDel.result.content[0].text);
+        const pRel = JSON.parse(resRel.result.content[0].text);
+
+        if (pPath.success && pPath.paths.length === 0 && pDel.success && pRel.success && pRel.relations.length === 0) {
+            console.log("✅ Test 8 Passed! Unreachable path handled, contact deleted, and relations cascades verified.");
+            pass++;
+        } else {
+            console.log("❌ Test 8 Failed. Outputs:", pPath, pDel, pRel);
+            fail++;
+        }
+    } catch (err) {
+        console.log("❌ Test 8 Error:", err.message);
+        fail++;
+    }
+
     console.log(`\n=== Graph Test Results: ${pass} pass, ${fail} fail ===`);
     if (fail > 0) {
         console.error("\n--- Server Stderr Logs ---");

@@ -2080,7 +2080,7 @@ export const memoryTool = {
                 // =============================================
                 case "snippet_search": {
                     const { text, query } = args;
-                    if (!query) {
+                    if (!query || !query.trim()) {
                         return { content: [{ type: "text", text: "query required" }], isError: true };
                     }
                     
@@ -2358,15 +2358,16 @@ export const memoryTool = {
                     switch (contactOp) {
                         case "create": {
                             const { name, email, phone, role, properties = {}, entityType = "Person" } = args;
-                            if (!name) {
-                                return { content: [{ type: "text", text: "name required for creating contact" }], isError: true };
+                            if (!name || !name.trim()) {
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "name required for creating contact" }) }], isError: true };
                             }
+                            const trimmedName = name.trim();
                             
                             // Check if a contact with this name already exists in this project
                             const existing = db.prepare(`
                                 SELECT * FROM Entities 
-                                WHERE userId = ? AND projectId = ? AND name = ? AND entityType = ?
-                            `).get(userId, projectId || "", name, entityType) as any;
+                                WHERE userId = ? AND projectId = ? AND LOWER(name) = LOWER(?) AND entityType = ?
+                            `).get(userId, projectId || "", trimmedName, entityType) as any;
                             
                             if (existing) {
                                 return { content: [{ type: "text", text: JSON.stringify({
@@ -2380,7 +2381,7 @@ export const memoryTool = {
                             }
                             
                             // Create the entity
-                            const contact = createEntity(userId, projectId || "", entityType, name, properties, userId);
+                            const contact = createEntity(userId, projectId || "", entityType, trimmedName, properties, userId);
                             
                             // Also update email, phone, role if provided
                             if (email !== undefined || phone !== undefined || role !== undefined) {
@@ -2405,12 +2406,12 @@ export const memoryTool = {
                         case "update": {
                             const { contactId, name, email, phone, role, properties } = args;
                             if (!contactId) {
-                                return { content: [{ type: "text", text: "contactId required for updating contact" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "contactId required for updating contact" }) }], isError: true };
                             }
                             
                             const existing = getEntity(contactId);
                             if (!existing) {
-                                return { content: [{ type: "text", text: `Contact with ID ${contactId} not found` }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: `Contact with ID ${contactId} not found` }) }], isError: true };
                             }
                             
                             // Update base fields in Entities table if provided
@@ -2447,12 +2448,12 @@ export const memoryTool = {
                         case "delete": {
                             const { contactId } = args;
                             if (!contactId) {
-                                return { content: [{ type: "text", text: "contactId required for deleting contact" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "contactId required for deleting contact" }) }], isError: true };
                             }
                             
                             const existing = getEntity(contactId);
                             if (!existing) {
-                                return { content: [{ type: "text", text: `Contact with ID ${contactId} not found` }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: `Contact with ID ${contactId} not found` }) }], isError: true };
                             }
                             
                             deleteEntity(contactId);
@@ -2469,7 +2470,7 @@ export const memoryTool = {
                         case "get": {
                             const { contactId, name } = args;
                             if (!contactId && !name) {
-                                return { content: [{ type: "text", text: "Either contactId or name is required" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "Either contactId or name is required" }) }], isError: true };
                             }
                             
                             let contact = null;
@@ -2489,7 +2490,7 @@ export const memoryTool = {
                             }
                             
                             if (!contact) {
-                                return { content: [{ type: "text", text: "Contact not found" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "Contact not found" }) }], isError: true };
                             }
                             
                             return { content: [{ type: "text", text: JSON.stringify({
@@ -2509,7 +2510,7 @@ export const memoryTool = {
                         case "search": {
                             const { query } = args;
                             if (!query) {
-                                return { content: [{ type: "text", text: "query required for search" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "query required for search" }) }], isError: true };
                             }
                             
                             const qLower = query.toLowerCase();
@@ -2558,15 +2559,16 @@ export const memoryTool = {
                     
                     // Helper to resolve name or ID to Entity
                     const resolveEntity = (idOrName: string): any => {
-                        if (!idOrName) return null;
+                        if (!idOrName || !idOrName.trim()) return null;
+                        const trimmed = idOrName.trim();
                         // First try by ID
-                        const ent = getEntity(idOrName);
+                        const ent = getEntity(trimmed);
                         if (ent) return ent;
-                        // Try by Name
+                        // Try by Name (case-insensitive)
                         const row = db.prepare(`
                             SELECT * FROM Entities 
-                            WHERE userId = ? AND projectId = ? AND name = ?
-                        `).get(userId, projectId || "", idOrName) as any;
+                            WHERE userId = ? AND projectId = ? AND LOWER(name) = LOWER(?)
+                        `).get(userId, projectId || "", trimmed) as any;
                         if (row) {
                             return {
                                 ...row,
@@ -2580,17 +2582,17 @@ export const memoryTool = {
                         case "link": {
                             const { fromId, toId, relationType, properties = {} } = args;
                             if (!fromId || !toId || !relationType) {
-                                return { content: [{ type: "text", text: "fromId, toId, and relationType are required" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "fromId, toId, and relationType are required" }) }], isError: true };
                             }
                             
                             const fromEnt = resolveEntity(fromId);
                             const toEnt = resolveEntity(toId);
                             
                             if (!fromEnt) {
-                                return { content: [{ type: "text", text: `Source contact "${fromId}" not found` }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: `Source contact "${fromId}" not found` }) }], isError: true };
                             }
                             if (!toEnt) {
-                                return { content: [{ type: "text", text: `Target contact "${toId}" not found` }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: `Target contact "${toId}" not found` }) }], isError: true };
                             }
                             
                             // Check if this specific relationship already exists to avoid exact duplicates
@@ -2626,14 +2628,14 @@ export const memoryTool = {
                             }
                             
                             if (!fromId || !toId) {
-                                return { content: [{ type: "text", text: "Must provide either relationId or both fromId and toId" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "Must provide either relationId or both fromId and toId" }) }], isError: true };
                             }
                             
                             const fromEnt = resolveEntity(fromId);
                             const toEnt = resolveEntity(toId);
                             
                             if (!fromEnt || !toEnt) {
-                                return { content: [{ type: "text", text: "Source or target contact not found" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "Source or target contact not found" }) }], isError: true };
                             }
                             
                             let sql = `DELETE FROM Relations WHERE userId = ? AND projectId = ? AND fromId = ? AND toId = ?`;
@@ -2652,14 +2654,30 @@ export const memoryTool = {
                         
                         case "get_relations": {
                             const { fromId, toId, relationType } = args;
-                            const fromEnt = fromId ? resolveEntity(fromId) : null;
-                            const toEnt = toId ? resolveEntity(toId) : null;
+                            
+                            let resolvedFromId: string | undefined = undefined;
+                            if (fromId) {
+                                const fromEnt = resolveEntity(fromId);
+                                if (!fromEnt) {
+                                    return { content: [{ type: "text", text: JSON.stringify({ success: true, relations: [] }) }] };
+                                }
+                                resolvedFromId = fromEnt.id;
+                            }
+                            
+                            let resolvedToId: string | undefined = undefined;
+                            if (toId) {
+                                const toEnt = resolveEntity(toId);
+                                if (!toEnt) {
+                                    return { content: [{ type: "text", text: JSON.stringify({ success: true, relations: [] }) }] };
+                                }
+                                resolvedToId = toEnt.id;
+                            }
                             
                             const relations = getRelations(
                                 userId,
                                 projectId || "",
-                                fromEnt?.id,
-                                toEnt?.id,
+                                resolvedFromId,
+                                resolvedToId,
                                 relationType
                             );
                             
@@ -2706,14 +2724,14 @@ export const memoryTool = {
                         case "path": {
                             const { fromId, toId, depth = 3 } = args;
                             if (!fromId || !toId) {
-                                return { content: [{ type: "text", text: "fromId and toId are required for path traversal" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "fromId and toId are required for path traversal" }) }], isError: true };
                             }
                             
                             const fromEnt = resolveEntity(fromId);
                             const toEnt = resolveEntity(toId);
                             
                             if (!fromEnt || !toEnt) {
-                                return { content: [{ type: "text", text: "Source or target contact not found" }], isError: true };
+                                return { content: [{ type: "text", text: JSON.stringify({ success: false, message: "Source or target contact not found" }) }], isError: true };
                             }
                             
                             // BFS pathfinding up to depth
