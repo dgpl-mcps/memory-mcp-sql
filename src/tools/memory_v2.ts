@@ -2,7 +2,7 @@
 // ROBUST MEMORY TOOL
 // Features: Auto-extract, intent detection, query expansion, smart defaults
 // =============================================
-import { db, dbConfig, searchEmbeddings, storeEmbedding } from "../db/sqlite.js";
+import { db, dbConfig, searchEmbeddings, storeEmbedding, createEntity, updateEntity, getEntity, listEntities, deleteEntity, createRelation, getRelations, deleteRelation } from "../db/sqlite.js";
 import { getMemoryConfig } from "../utils/env.js";
 import { localEmbed, tokenize } from "../utils/local-embed.js";
 
@@ -199,7 +199,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search", "contact", "contact_graph"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -232,6 +232,20 @@ export const memoryTool = {
             minScore: { type: "number", description: "Minimum similarity score threshold (default: 0.95)" },
             beforeLimit: { type: "number", description: "Lines of context to show before match (default: 2)" },
             afterLimit: { type: "number", description: "Lines of context to show after match (default: 2)" },
+            contactOp: { type: "string", enum: ["create", "update", "delete", "get", "list", "search"], description: "Contact operation to perform" },
+            contactId: { type: "string", description: "Contact ID" },
+            name: { type: "string", description: "Contact name" },
+            email: { type: "string", description: "Contact email" },
+            phone: { type: "string", description: "Contact phone number" },
+            role: { type: "string", description: "Contact role/job title" },
+            entityType: { type: "string", description: "Type of entity (defaults to Person)" },
+            properties: { type: "object", description: "Custom key-value properties" },
+            graphOp: { type: "string", enum: ["link", "unlink", "get_relations", "get_graph", "path"], description: "Contact graph operation to perform" },
+            fromId: { type: "string", description: "Source contact ID or name" },
+            toId: { type: "string", description: "Target contact ID or name" },
+            relationType: { type: "string", description: "Type of relationship (e.g. wife, friend, employee)" },
+            relationId: { type: "string", description: "Specific relationship ID" },
+            depth: { type: "number", description: "Traversing depth for graph (default: 2)" },
         },
         required: ["op", "userId"],
     },
@@ -2329,6 +2343,428 @@ export const memoryTool = {
                             minScore,
                             results: dbSnippets
                         }) }] };
+                    }
+                }
+
+                // =============================================
+                // CONTACT: CRUD operations for Person/Org entities
+                // =============================================
+                case "contact": {
+                    const { contactOp } = args;
+                    if (!contactOp) {
+                        return { content: [{ type: "text", text: "contactOp required" }], isError: true };
+                    }
+                    
+                    switch (contactOp) {
+                        case "create": {
+                            const { name, email, phone, role, properties = {}, entityType = "Person" } = args;
+                            if (!name) {
+                                return { content: [{ type: "text", text: "name required for creating contact" }], isError: true };
+                            }
+                            
+                            // Check if a contact with this name already exists in this project
+                            const existing = db.prepare(`
+                                SELECT * FROM Entities 
+                                WHERE userId = ? AND projectId = ? AND name = ? AND entityType = ?
+                            `).get(userId, projectId || "", name, entityType) as any;
+                            
+                            if (existing) {
+                                return { content: [{ type: "text", text: JSON.stringify({
+                                    success: true,
+                                    message: "Contact already exists",
+                                    contact: {
+                                        ...existing,
+                                        properties: JSON.parse(existing.properties || "{}")
+                                    }
+                                }) }] };
+                            }
+                            
+                            // Create the entity
+                            const contact = createEntity(userId, projectId || "", entityType, name, properties, userId);
+                            
+                            // Also update email, phone, role if provided
+                            if (email !== undefined || phone !== undefined || role !== undefined) {
+                                const sets = [];
+                                const params = [];
+                                if (email !== undefined) { sets.push("email = ?"); params.push(email); }
+                                if (phone !== undefined) { sets.push("phone = ?"); params.push(phone); }
+                                if (role !== undefined) { sets.push("role = ?"); params.push(role); }
+                                params.push(contact.id);
+                                db.prepare(`UPDATE Entities SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+                            }
+                            
+                            // Fetch full updated contact
+                            const fullContact = getEntity(contact.id);
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                message: "Contact created successfully",
+                                contact: fullContact
+                            }) }] };
+                        }
+                        
+                        case "update": {
+                            const { contactId, name, email, phone, role, properties } = args;
+                            if (!contactId) {
+                                return { content: [{ type: "text", text: "contactId required for updating contact" }], isError: true };
+                            }
+                            
+                            const existing = getEntity(contactId);
+                            if (!existing) {
+                                return { content: [{ type: "text", text: `Contact with ID ${contactId} not found` }], isError: true };
+                            }
+                            
+                            // Update base fields in Entities table if provided
+                            const sets = ["updatedAt = CURRENT_TIMESTAMP"];
+                            const params = [];
+                            if (name !== undefined) { sets.push("name = ?"); params.push(name); }
+                            if (email !== undefined) { sets.push("email = ?"); params.push(email); }
+                            if (phone !== undefined) { sets.push("phone = ?"); params.push(phone); }
+                            if (role !== undefined) { sets.push("role = ?"); params.push(role); }
+                            
+                            if (properties !== undefined) {
+                                // Merge properties
+                                const mergedProps = {
+                                    ...existing.properties,
+                                    ...properties
+                                };
+                                sets.push("properties = ?");
+                                params.push(JSON.stringify(mergedProps));
+                            }
+                            
+                            if (sets.length > 1) {
+                                params.push(contactId);
+                                db.prepare(`UPDATE Entities SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+                            }
+                            
+                            const updated = getEntity(contactId);
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                message: "Contact updated successfully",
+                                contact: updated
+                            }) }] };
+                        }
+                        
+                        case "delete": {
+                            const { contactId } = args;
+                            if (!contactId) {
+                                return { content: [{ type: "text", text: "contactId required for deleting contact" }], isError: true };
+                            }
+                            
+                            const existing = getEntity(contactId);
+                            if (!existing) {
+                                return { content: [{ type: "text", text: `Contact with ID ${contactId} not found` }], isError: true };
+                            }
+                            
+                            deleteEntity(contactId);
+                            // Also delete relations associated with it (due to CASCADE, but let's double check)
+                            db.prepare(`DELETE FROM Relations WHERE fromId = ? OR toId = ?`).run(contactId, contactId);
+                            
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                message: "Contact deleted successfully",
+                                contactId
+                            }) }] };
+                        }
+                        
+                        case "get": {
+                            const { contactId, name } = args;
+                            if (!contactId && !name) {
+                                return { content: [{ type: "text", text: "Either contactId or name is required" }], isError: true };
+                            }
+                            
+                            let contact = null;
+                            if (contactId) {
+                                contact = getEntity(contactId);
+                            } else if (name) {
+                                const row = db.prepare(`
+                                    SELECT * FROM Entities 
+                                    WHERE userId = ? AND projectId = ? AND name = ?
+                                `).get(userId, projectId || "", name) as any;
+                                if (row) {
+                                    contact = {
+                                        ...row,
+                                        properties: JSON.parse(row.properties || "{}")
+                                    };
+                                }
+                            }
+                            
+                            if (!contact) {
+                                return { content: [{ type: "text", text: "Contact not found" }], isError: true };
+                            }
+                            
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                contact
+                            }) }] };
+                        }
+                        
+                        case "list": {
+                            const contacts = listEntities(userId, projectId || "");
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                contacts
+                            }) }] };
+                        }
+                        
+                        case "search": {
+                            const { query } = args;
+                            if (!query) {
+                                return { content: [{ type: "text", text: "query required for search" }], isError: true };
+                            }
+                            
+                            const qLower = query.toLowerCase();
+                            const contacts = listEntities(userId, projectId || "");
+                            
+                            // Score and filter contacts by similarity or exact match
+                            const results = contacts.map(c => {
+                                let score = 0;
+                                if (c.name.toLowerCase().includes(qLower) || 
+                                    (c.role && c.role.toLowerCase().includes(qLower)) ||
+                                    (c.email && c.email.toLowerCase().includes(qLower))) {
+                                    score = 1.0;
+                                } else {
+                                    // Semantic overlap or keyword search in custom properties
+                                    const propsStr = JSON.stringify(c.properties).toLowerCase();
+                                    if (propsStr.includes(qLower)) {
+                                        score = 0.8;
+                                    }
+                                }
+                                return { contact: c, score };
+                            })
+                            .filter(r => r.score > 0)
+                            .sort((a, b) => b.score - a.score)
+                            .map(r => r.contact);
+                            
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                query,
+                                contacts: results
+                            }) }] };
+                        }
+                        
+                        default:
+                            return { content: [{ type: "text", text: `Unknown contactOp: ${contactOp}` }], isError: true };
+                    }
+                }
+
+                // =============================================
+                // CONTACT_GRAPH: Multi-relationship graph management
+                // =============================================
+                case "contact_graph": {
+                    const { graphOp } = args;
+                    if (!graphOp) {
+                        return { content: [{ type: "text", text: "graphOp required" }], isError: true };
+                    }
+                    
+                    // Helper to resolve name or ID to Entity
+                    const resolveEntity = (idOrName: string): any => {
+                        if (!idOrName) return null;
+                        // First try by ID
+                        const ent = getEntity(idOrName);
+                        if (ent) return ent;
+                        // Try by Name
+                        const row = db.prepare(`
+                            SELECT * FROM Entities 
+                            WHERE userId = ? AND projectId = ? AND name = ?
+                        `).get(userId, projectId || "", idOrName) as any;
+                        if (row) {
+                            return {
+                                ...row,
+                                properties: JSON.parse(row.properties || "{}")
+                            };
+                        }
+                        return null;
+                    };
+                    
+                    switch (graphOp) {
+                        case "link": {
+                            const { fromId, toId, relationType, properties = {} } = args;
+                            if (!fromId || !toId || !relationType) {
+                                return { content: [{ type: "text", text: "fromId, toId, and relationType are required" }], isError: true };
+                            }
+                            
+                            const fromEnt = resolveEntity(fromId);
+                            const toEnt = resolveEntity(toId);
+                            
+                            if (!fromEnt) {
+                                return { content: [{ type: "text", text: `Source contact "${fromId}" not found` }], isError: true };
+                            }
+                            if (!toEnt) {
+                                return { content: [{ type: "text", text: `Target contact "${toId}" not found` }], isError: true };
+                            }
+                            
+                            // Check if this specific relationship already exists to avoid exact duplicates
+                            const existing = db.prepare(`
+                                SELECT * FROM Relations 
+                                WHERE userId = ? AND projectId = ? AND fromId = ? AND toId = ? AND relationType = ?
+                            `).get(userId, projectId || "", fromEnt.id, toEnt.id, relationType) as any;
+                            
+                            if (existing) {
+                                return { content: [{ type: "text", text: JSON.stringify({
+                                    success: true,
+                                    message: "Relationship already exists",
+                                    relation: {
+                                        ...existing,
+                                        properties: JSON.parse(existing.properties || "{}")
+                                    }
+                                }) }] };
+                            }
+                            
+                            const relation = createRelation(userId, projectId || "", fromEnt.id, toEnt.id, relationType, properties);
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                message: "Relationship created successfully",
+                                relation
+                            }) }] };
+                        }
+                        
+                        case "unlink": {
+                            const { relationId, fromId, toId, relationType } = args;
+                            if (relationId) {
+                                deleteRelation(relationId);
+                                return { content: [{ type: "text", text: JSON.stringify({ success: true, message: "Relationship deleted", relationId }) }] };
+                            }
+                            
+                            if (!fromId || !toId) {
+                                return { content: [{ type: "text", text: "Must provide either relationId or both fromId and toId" }], isError: true };
+                            }
+                            
+                            const fromEnt = resolveEntity(fromId);
+                            const toEnt = resolveEntity(toId);
+                            
+                            if (!fromEnt || !toEnt) {
+                                return { content: [{ type: "text", text: "Source or target contact not found" }], isError: true };
+                            }
+                            
+                            let sql = `DELETE FROM Relations WHERE userId = ? AND projectId = ? AND fromId = ? AND toId = ?`;
+                            const params = [userId, projectId || "", fromEnt.id, toEnt.id];
+                            if (relationType) {
+                                sql += ` AND relationType = ?`;
+                                params.push(relationType);
+                            }
+                            
+                            const res = db.prepare(sql).run(...params);
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                message: `Removed ${res.changes} relationships`
+                            }) }] };
+                        }
+                        
+                        case "get_relations": {
+                            const { fromId, toId, relationType } = args;
+                            const fromEnt = fromId ? resolveEntity(fromId) : null;
+                            const toEnt = toId ? resolveEntity(toId) : null;
+                            
+                            const relations = getRelations(
+                                userId,
+                                projectId || "",
+                                fromEnt?.id,
+                                toEnt?.id,
+                                relationType
+                            );
+                            
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                relations
+                            }) }] };
+                        }
+                        
+                        case "get_graph": {
+                            // Get all entities in the project
+                            const entities = listEntities(userId, projectId || "");
+                            
+                            // Get all relationships in the project
+                            const relations = getRelations(userId, projectId || "");
+                            
+                            const nodes = entities.map(e => ({
+                                id: e.id,
+                                name: e.name,
+                                entityType: e.entityType,
+                                email: e.email,
+                                phone: e.phone,
+                                role: e.role,
+                                properties: e.properties
+                            }));
+                            
+                            const edges = relations.map(r => ({
+                                id: r.id,
+                                source: r.fromId,
+                                target: r.toId,
+                                type: r.relationType,
+                                properties: r.properties
+                            }));
+                            
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                graph: {
+                                    nodes,
+                                    edges
+                                }
+                            }) }] };
+                        }
+                        
+                        case "path": {
+                            const { fromId, toId, depth = 3 } = args;
+                            if (!fromId || !toId) {
+                                return { content: [{ type: "text", text: "fromId and toId are required for path traversal" }], isError: true };
+                            }
+                            
+                            const fromEnt = resolveEntity(fromId);
+                            const toEnt = resolveEntity(toId);
+                            
+                            if (!fromEnt || !toEnt) {
+                                return { content: [{ type: "text", text: "Source or target contact not found" }], isError: true };
+                            }
+                            
+                            // BFS pathfinding up to depth
+                            const allRelations = getRelations(userId, projectId || "");
+                            const adjacencyList: Record<string, { to: string; type: string; id: string }[]> = {};
+                            
+                            allRelations.forEach(r => {
+                                if (!adjacencyList[r.fromId]) adjacencyList[r.fromId] = [];
+                                adjacencyList[r.fromId].push({ to: r.toId, type: r.relationType, id: r.id });
+                                
+                                // Supporting bidirectional traversal (undirected graph representation for pathfinding)
+                                if (!adjacencyList[r.toId]) adjacencyList[r.toId] = [];
+                                adjacencyList[r.toId].push({ to: r.fromId, type: r.relationType, id: r.id });
+                            });
+                            
+                            const queue: { current: string; path: any[] }[] = [{ current: fromEnt.id, path: [] }];
+                            const visited = new Set<string>([fromEnt.id]);
+                            const foundPaths: any[] = [];
+                            
+                            while (queue.length > 0) {
+                                const { current, path } = queue.shift()!;
+                                
+                                if (current === toEnt.id) {
+                                    foundPaths.push(path);
+                                    continue;
+                                }
+                                
+                                if (path.length >= depth) continue;
+                                
+                                const neighbors = adjacencyList[current] || [];
+                                for (const n of neighbors) {
+                                    if (!visited.has(n.to)) {
+                                        visited.add(n.to);
+                                        queue.push({
+                                            current: n.to,
+                                            path: [...path, { from: current, to: n.to, type: n.type, relationId: n.id }]
+                                        });
+                                    }
+                                }
+                            }
+                            
+                            return { content: [{ type: "text", text: JSON.stringify({
+                                success: true,
+                                from: fromEnt,
+                                to: toEnt,
+                                paths: foundPaths
+                            }) }] };
+                        }
+                        
+                        default:
+                            return { content: [{ type: "text", text: `Unknown graphOp: ${graphOp}` }], isError: true };
                     }
                 }
                 
