@@ -14,15 +14,16 @@ export const entityTool = {
 **Operations:**
 | Op | Description |
 |----|-------------|
-| create | Create new entity |
+| create | Create new entity (supports nicknames) |
 | read | Get by ID |
-| update | Update name/properties |
+| update | Update name/nicknames/properties |
 | delete | Delete entity |
 | search | Find by type/name |
 
 **Examples:**
 \`\`\`json
-{ "op": "create", "userId": "u1", "entityType": "Person", "name": "Priya", "properties": {"role": "Lead"} }
+{ "op": "create", "userId": "u1", "entityType": "Person", "name": "Priya", "nicknames": ["Pri", "Priyanka"], "properties": {"role": "Lead"} }
+{ "op": "update", "id": "entity_xxx", "nicknames": ["Pri", "Priyanka", "P"] }
 { "op": "search", "userId": "u1", "entityType": "Person", "search": "priya" }
 \`\`\``,
     inputSchema: {
@@ -35,6 +36,7 @@ export const entityTool = {
             id: { type: "string" },
             entityType: { type: "string" },
             name: { type: "string" },
+            nicknames: { type: "array", items: { type: "string" }, description: "Multiple nicknames/aliases for this entity" },
             properties: { type: "object" },
             search: { type: "string" },
             limit: { type: "number" },
@@ -50,20 +52,22 @@ export const entityTool = {
                     const eid = `entity_${Date.now()}`;
                     const owner = ownerId || userId;
                     const proj = projectId || "default";
-                    db.prepare(`INSERT INTO Entities (id, userId, projectId, entityType, name, properties, ownerId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(eid, userId, proj, entityType, name, JSON.stringify(properties || {}), owner, new Date().toISOString());
+                    const nick = args.nicknames ? JSON.stringify(args.nicknames) : '[]';
+                    db.prepare(`INSERT INTO Entities (id, userId, projectId, entityType, name, nicknames, properties, ownerId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(eid, userId, proj, entityType, name, nick, JSON.stringify(properties || {}), owner, new Date().toISOString());
                     return { content: [{ type: "text", text: `Created ${entityType}: ${name}` }] };
                 }
                 case "read": {
                     if (!id) return { content: [{ type: "text", text: "id required" }], isError: true };
                     const e = db.prepare(`SELECT * FROM Entities WHERE id = ?`).get(id) as any;
                     if (!e) return { content: [{ type: "text", text: "Not found" }] };
-                    return { content: [{ type: "text", text: JSON.stringify({ id: e.id, type: e.entityType, name: e.name, properties: JSON.parse(e.properties || "{}") }) }] };
+                    return { content: [{ type: "text", text: JSON.stringify({ id: e.id, type: e.entityType, name: e.name, nicknames: JSON.parse(e.nicknames || "[]"), properties: JSON.parse(e.properties || "{}") }) }] };
                 }
                 case "update": {
                     if (!id) return { content: [{ type: "text", text: "id required" }], isError: true };
                     const sets = ["updatedAt = ?"];
                     const vals: any[] = [new Date().toISOString()];
                     if (name) { sets.push("name = ?"); vals.push(name); }
+                    if (args.nicknames) { sets.push("nicknames = ?"); vals.push(JSON.stringify(args.nicknames)); }
                     if (properties) { sets.push("properties = ?"); vals.push(JSON.stringify(properties)); }
                     vals.push(id);
                     db.prepare(`UPDATE Entities SET ${sets.join(", ")} WHERE id = ?`).run(...vals);

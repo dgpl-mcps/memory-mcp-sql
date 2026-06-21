@@ -300,6 +300,7 @@ export const initSqlite = () => {
             projectId TEXT NOT NULL,
             entityType TEXT NOT NULL,
             name TEXT NOT NULL,
+            nicknames TEXT DEFAULT '[]',
             properties TEXT DEFAULT '{}',
             -- Extended properties for Person/Bot/Org
             email TEXT,
@@ -1303,12 +1304,13 @@ export const findRelatedContent = async (refTable: string, refId: string, limit:
 };
 
 // Graph Operations
-export const createEntity = (userId: string, projectId: string, entityType: string, name: string, properties: any = {}, ownerId?: string) => {
+export const createEntity = (userId: string, projectId: string, entityType: string, name: string, properties: any = {}, ownerId?: string, nicknames?: string[]) => {
     const id = `entity_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const owner = ownerId || userId;
-    db.prepare(`INSERT INTO Entities (id, userId, projectId, entityType, name, properties, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, userId, projectId, entityType, name, ensureJson(properties), owner);
-    return { id, userId, projectId, entityType, name, properties, ownerId: owner, createdAt: new Date().toISOString() };
+    const nick = nicknames ? JSON.stringify(nicknames) : '[]';
+    db.prepare(`INSERT INTO Entities (id, userId, projectId, entityType, name, nicknames, properties, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, projectId, entityType, name, nick, ensureJson(properties), owner);
+    return { id, userId, projectId, entityType, name, nicknames: nicknames || [], properties, ownerId: owner, createdAt: new Date().toISOString() };
 };
 
 export const updateEntity = (id: string, updates: { name?: string; properties?: any }) => {
