@@ -9,7 +9,7 @@ export const entityTool = {
 
 **Purpose:** Manage knowledge graph entities.
 
-**Entity Types:** Person, Bot, Organization, Task, Rule, CoreRule, LongTermGoal, Epic, Todo, Insight, Walkthrough
+**Entity Types:** Person, Bot, Organization, Project, Server, Service, Incident, Task, Rule, CoreRule, LongTermGoal, Epic, Todo, Insight, Walkthrough, Goal, Event, Document
 
 **Operations:**
 | Op | Description |
