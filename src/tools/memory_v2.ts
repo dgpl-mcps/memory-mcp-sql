@@ -497,6 +497,7 @@ export const memoryTool = {
 - **A-MEM Zettelkasten** (structured notes, keywords, tags, context descriptions)
 - **Memory Evolution** (existing memories update when new info arrives)
 - **Temporal KG** (time-range queries, timeline, cross-session synthesis)
+- **LightRAG Graph Retrieve** (dual-layer: entity graph + vector similarity, hybrid mode)
 - **Intent detection** & priority boost
 - **Entity extraction** (@mentions, CamelCase, #hashtags)
 - **Vector search** (semantic similarity)
@@ -515,7 +516,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search", "contact", "contact_graph", "temporal", "synthesize", "proactive", "light_context", "profile"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search", "contact", "contact_graph", "temporal", "synthesize", "proactive", "light_context", "profile", "graph_retrieve"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -2088,6 +2089,134 @@ export const memoryTool = {
                 // GRAPH: Knowledge graph visualization data
                 // Export memory network as nodes and edges
                 // =============================================
+                // =============================================
+                // GRAPH_RETRIEVE: LightRAG-style dual-layer retrieval
+                // Combines entity graph traversal + vector similarity
+                // =============================================
+                case "graph_retrieve": {
+                    const { query, limit = 10, mode = "hybrid" } = args;
+                    if (!query) return { content: [{ type: "text", text: "query required" }], isError: true };
+                    
+                    // Phase 1: Entity Graph Traversal
+                    // Extract entities from query and find related memories
+                    const queryEntities = extractEntities(query);
+                    const graphResults: any[] = [];
+                    
+                    if (queryEntities.length > 0) {
+                        for (const entity of queryEntities.slice(0, 3)) {
+                            const byEntity = db.prepare(`
+                                SELECT id, content, summary, intent, entities, priority, createdAt
+                                FROM LongTermMemory 
+                                WHERE userId = ? AND entities LIKE ?
+                                ORDER BY priority DESC, createdAt DESC
+                                LIMIT ?
+                            `).all(userId, `%${entity}%`, limit) as any[];
+                            
+                            byEntity.forEach(r => {
+                                if (!graphResults.find(x => x.id === r.id)) {
+                                    graphResults.push(r);
+                                }
+                            });
+                        }
+                        
+                        // Also traverse links from entity-matched memories
+                        const entityIds = graphResults.map(r => r.id);
+                        if (entityIds.length > 0) {
+                            const placeholders = entityIds.map(() => '?').join(',');
+                            const linked = db.prepare(`
+                                SELECT DISTINCT m2.id, m2.content, m2.summary, m2.intent, m2.entities, m2.priority, m2.createdAt
+                                FROM MemoryLinks l
+                                JOIN LongTermMemory m2 ON m2.id = l.memoryId2
+                                WHERE l.memoryId1 IN (${placeholders}) AND l.strength >= 0.5
+                                ORDER BY l.strength DESC
+                                LIMIT ?
+                            `).all(...entityIds, limit) as any[];
+                            
+                            linked.forEach(r => {
+                                if (!graphResults.find(x => x.id === r.id)) {
+                                    graphResults.push(r);
+                                }
+                            });
+                        }
+                    }
+                    
+                    // Phase 2: Vector Similarity Search (if available)
+                    let vectorResults: any[] = [];
+                    try {
+                        const vecResults = await searchEmbeddings(userId, query, "LongTermMemory", limit);
+                        if (vecResults && vecResults.length > 0) {
+                            const vecIds = vecResults.map((r: any) => r.refId);
+                            if (vecIds.length > 0) {
+                                const placeholders = vecIds.map(() => '?').join(',');
+                                const vecMemories = db.prepare(`
+                                    SELECT id, content, summary, intent, entities, priority, createdAt
+                                    FROM LongTermMemory WHERE id IN (${placeholders})
+                                `).all(...vecIds) as any[];
+                                
+                                const memMap = new Map(vecMemories.map((m: any) => [m.id, m]));
+                                vectorResults = vecResults.map((r: any) => {
+                                    const mem = memMap.get(r.refId);
+                                    return mem ? { ...mem, distance: r.distance } : null;
+                                }).filter(Boolean);
+                            }
+                        }
+                    } catch (e) {
+                        // Vector search not available, skip
+                    }
+                    
+                    // Phase 3: Hybrid Merge
+                    let merged: any[] = [];
+                    if (mode === "graph") {
+                        merged = graphResults;
+                    } else if (mode === "vector") {
+                        merged = vectorResults;
+                    } else {
+                        // Hybrid: interleave graph + vector results
+                        const seen = new Set<string>();
+                        const maxLen = Math.max(graphResults.length, vectorResults.length);
+                        for (let i = 0; i < maxLen; i++) {
+                            if (i < graphResults.length && !seen.has(graphResults[i].id)) {
+                                merged.push(graphResults[i]);
+                                seen.add(graphResults[i].id);
+                            }
+                            if (i < vectorResults.length && !seen.has(vectorResults[i].id)) {
+                                merged.push(vectorResults[i]);
+                                seen.add(vectorResults[i].id);
+                            }
+                        }
+                    }
+                    
+                    // Build entity graph for context
+                    const entityGraph: Record<string, string[]> = {};
+                    merged.forEach((m: any) => {
+                        const ents = JSON.parse(m.entities || "[]");
+                        ents.forEach((e: string) => {
+                            if (!entityGraph[e]) entityGraph[e] = [];
+                            if (!entityGraph[e].includes(m.id.slice(0, 15) + "...")) {
+                                entityGraph[e].push(m.id.slice(0, 15) + "...");
+                            }
+                        });
+                    });
+                    
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        query,
+                        mode,
+                        count: merged.length,
+                        graphCount: graphResults.length,
+                        vectorCount: vectorResults.length,
+                        entityGraph: Object.keys(entityGraph).length > 0 ? entityGraph : undefined,
+                        results: merged.slice(0, limit).map(r => ({
+                            id: r.id.slice(0, 15) + "...",
+                            summary: r.summary || r.content?.slice(0, 80),
+                            intent: r.intent,
+                            entities: JSON.parse(r.entities || "[]"),
+                            priority: Math.round((r.priority || 0.5) * 100) + "%",
+                            distance: r.distance,
+                            time: r.createdAt
+                        }))
+                    }) }] };
+                }
+                
                 case "graph": {
                     const { depth = 2, focusMemoryId } = args;
                     
