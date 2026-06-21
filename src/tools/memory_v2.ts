@@ -129,6 +129,175 @@ function autoSummarize(text: string): { summary: string; needsSummarization: boo
     return { summary: summary.trim(), needsSummarization: text.length > SUMMARY_THRESHOLD };
 }
 
+// =============================================
+// A-MEM ZETTELKASTEN: Structured Note Generation
+// Generates comprehensive notes with contextual descriptions, keywords, tags
+// =============================================
+
+// Extract keywords from text (top N most frequent meaningful words)
+function extractKeywords(text: string, maxKeywords: number = 8): string[] {
+    const stopWords = new Set([
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+        "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did",
+        "will", "would", "could", "should", "may", "might", "shall", "can", "need", "must",
+        "this", "that", "these", "those", "it", "its", "they", "them", "their", "we", "our",
+        "you", "your", "he", "she", "his", "her", "him", "not", "no", "nor", "so", "if", "then",
+        "than", "too", "very", "just", "about", "also", "more", "some", "any", "each", "every",
+        "from", "into", "over", "under", "between", "through", "during", "before", "after",
+        "above", "below", "up", "down", "out", "off", "away", "back", "here", "there"
+    ]);
+    
+    const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 3 && !stopWords.has(w));
+    const freq: Record<string, number> = {};
+    words.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+    
+    return Object.entries(freq)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, maxKeywords)
+        .map(([w]) => w);
+}
+
+// Generate tags from entities and keywords
+function generateTags(entities: string[], keywords: string[]): string[] {
+    const tags = new Set<string>();
+    entities.forEach(e => tags.add(e.toLowerCase()));
+    keywords.forEach(k => tags.add(k));
+    return Array.from(tags).slice(0, 10);
+}
+
+// Generate contextual description (Zettelkasten-style)
+function generateContextDescription(text: string, intent: string, entities: string[]): string {
+    const prefix = intent === "error" ? "Issue encountered:" :
+                   intent === "success" ? "Successfully completed:" :
+                   intent === "learning" ? "Learned:" :
+                   intent === "question" ? "Question about:" :
+                   intent === "planning" ? "Plan to:" :
+                   "Note about:";
+    
+    const entityStr = entities.length > 0 ? ` [related: ${entities.slice(0, 3).join(", ")}]` : "";
+    const firstLine = text.split(/[.!?\n]/)[0]?.trim() || text.slice(0, 80);
+    
+    return `${prefix} ${firstLine.slice(0, 100)}${entityStr}`;
+}
+
+// =============================================
+// MEMORY EVOLUTION: Update existing memories when new info arrives
+// =============================================
+function evolveExistingMemories(userId: string, newId: string, newEntities: string[], newKeywords: string[], newIntent: string): void {
+    // Find existing memories that share entities or keywords with the new memory
+    const related = db.prepare(`
+        SELECT id, content, entities, keywords, intent, priority, accessCount
+        FROM LongTermMemory 
+        WHERE userId = ? AND id != ? AND (
+            entities LIKE ? OR intent = ?
+        )
+        ORDER BY priority DESC, createdAt DESC
+        LIMIT 5
+    `).all(userId, newId, `%${newEntities[0] || ""}%`, newIntent) as any[];
+    
+    for (const existing of related) {
+        const existingEntities = JSON.parse(existing.entities || "[]");
+        const existingKeywords = JSON.parse(existing.keywords || "[]");
+        
+        // Merge new entities into existing memory
+        const mergedEntities = [...new Set([...existingEntities, ...newEntities])];
+        const mergedKeywords = [...new Set([...existingKeywords, ...newKeywords])];
+        
+        // Boost access count for related memories
+        db.prepare(`
+            UPDATE LongTermMemory 
+            SET entities = ?, keywords = ?, accessCount = accessCount + 1, lastAccessedAt = CURRENT_TIMESTAMP
+            WHERE id = ?
+        `).run(JSON.stringify(mergedEntities), JSON.stringify(mergedKeywords), existing.id);
+    }
+}
+
+// =============================================
+// TEMPORAL KG: Time-range queries and cross-session synthesis
+// =============================================
+function getTemporalContext(userId: string, hoursBack: number = 24): any {
+    const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
+    
+    const memories = db.prepare(`
+        SELECT id, content, summary, intent, entities, priority, createdAt
+        FROM LongTermMemory 
+        WHERE userId = ? AND createdAt > ?
+        ORDER BY createdAt ASC
+    `).all(userId, since) as any[];
+    
+    // Group by intent
+    const byIntent: Record<string, any[]> = {};
+    memories.forEach(m => {
+        const intent = m.intent || "general";
+        if (!byIntent[intent]) byIntent[intent] = [];
+        byIntent[intent].push({
+            id: m.id.slice(0, 15) + "...",
+            summary: m.summary || m.content?.slice(0, 60),
+            time: m.createdAt
+        });
+    });
+    
+    // Build timeline
+    const timeline = memories.map(m => ({
+        time: m.createdAt,
+        type: m.intent,
+        summary: m.summary || m.content?.slice(0, 60),
+        entities: JSON.parse(m.entities || "[]")
+    }));
+    
+    return {
+        total: memories.length,
+        timeRange: { from: since, to: new Date().toISOString() },
+        byIntent,
+        timeline,
+        topEntities: getTopEntities(memories)
+    };
+}
+
+function getTopEntities(memories: any[]): { entity: string; count: number }[] {
+    const counts: Record<string, number> = {};
+    memories.forEach(m => {
+        const ents = JSON.parse(m.entities || "[]");
+        ents.forEach((e: string) => { counts[e] = (counts[e] || 0) + 1; });
+    });
+    return Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([e, c]) => ({ entity: e, count: c }));
+}
+
+// Cross-session synthesis: find related memories across different sessions
+function crossSessionSynthesis(userId: string, currentSessionId: string, limit: number = 5): any[] {
+    const currentSession = db.prepare(`
+        SELECT entities, intent, content FROM LongTermMemory 
+        WHERE userId = ? AND sessionId = ? ORDER BY createdAt DESC LIMIT 1
+    `).get(userId, currentSessionId) as any;
+    
+    if (!currentSession) return [];
+    
+    const currentEntities = JSON.parse(currentSession.entities || "[]");
+    const currentIntent = currentSession.intent;
+    
+    // Find memories from OTHER sessions with shared entities or intent
+    const crossSession = db.prepare(`
+        SELECT id, content, summary, intent, entities, sessionId, createdAt
+        FROM LongTermMemory 
+        WHERE userId = ? AND (sessionId IS NULL OR sessionId != ?)
+        AND (entities LIKE ? OR intent = ?)
+        ORDER BY priority DESC, createdAt DESC
+        LIMIT ?
+    `).all(userId, currentSessionId, `%${currentEntities[0] || ""}%`, currentIntent, limit) as any[];
+    
+    return crossSession.map(m => ({
+        id: m.id.slice(0, 15) + "...",
+        summary: m.summary || m.content?.slice(0, 60),
+        intent: m.intent,
+        entities: JSON.parse(m.entities || "[]"),
+        sessionId: m.sessionId,
+        time: m.createdAt
+    }));
+}
+
 export const memoryTool = {
     name: "memory",
     description: `## Unified Memory Tool
@@ -181,6 +350,9 @@ export const memoryTool = {
 
 **Smart Features:**
 - **8-phase auto-linking** (bidirectional)
+- **A-MEM Zettelkasten** (structured notes, keywords, tags, context descriptions)
+- **Memory Evolution** (existing memories update when new info arrives)
+- **Temporal KG** (time-range queries, timeline, cross-session synthesis)
 - **Intent detection** & priority boost
 - **Entity extraction** (@mentions, CamelCase, #hashtags)
 - **Vector search** (semantic similarity)
@@ -199,7 +371,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search", "contact", "contact_graph"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search", "contact", "contact_graph", "temporal", "synthesize"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -277,6 +449,11 @@ export const memoryTool = {
                     // Auto-extract entities
                     const entities = extractEntities(text);
                     
+                    // A-MEM Zettelkasten: Generate structured note
+                    const keywords = extractKeywords(text);
+                    const tags = generateTags(entities, keywords);
+                    const contextDescription = generateContextDescription(text, intent, entities);
+                    
                     // Generate smart summary
                     const { summary, needsSummarization } = autoSummarize(text);
                     
@@ -287,13 +464,14 @@ export const memoryTool = {
                     if (intent === "learning") priority = 0.8;
                     
                     db.prepare(`
-                        INSERT INTO LongTermMemory (id, userId, projectId, content, summary, response, intent, entities, priority, createdAt)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO LongTermMemory (id, userId, projectId, content, summary, response, intent, entities, keywords, priority, createdAt)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     `).run(
                         id, userId, projectId || "default", 
                         userMessage || "", summary,
                         agentMessage || "", intent,
                         JSON.stringify(entities),
+                        JSON.stringify(keywords),
                         priority, new Date().toISOString()
                     );
                     
@@ -469,6 +647,13 @@ export const memoryTool = {
                                 WHERE id IN (${placeholders})
                             `).run(...linkedIds);
                         }
+                    }
+                    
+                    // Phase 9: MEMORY EVOLUTION - Update existing memories with new entities/keywords
+                    try {
+                        evolveExistingMemories(userId, id, entities, keywords, intent);
+                    } catch (e) {
+                        console.error('[memory] evolution failed:', (e as Error).message);
                     }
                     
                     // Track memory patterns for learning
@@ -1129,7 +1314,7 @@ export const memoryTool = {
                             const id = `ltm_imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
                             db.prepare(`
                                 INSERT INTO LongTermMemory (id, userId, content, summary, response, intent, entities, priority, isPinned, createdAt)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             `).run(
                                 id, userId, m.content, m.summary, m.response,
                                 m.intent || "imported",
@@ -1589,6 +1774,29 @@ export const memoryTool = {
                 // =============================================
                 // SUGGEST: Proactive suggestions based on patterns
                 // =============================================
+                // =============================================
+                // TEMPORAL: Get time-range context and timeline
+                // =============================================
+                case "temporal": {
+                    const hoursBack = args.hoursBack || 24;
+                    const result = getTemporalContext(userId, hoursBack);
+                    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+                }
+                
+                // =============================================
+                // SYNTHESIZE: Cross-session context synthesis
+                // =============================================
+                case "synthesize": {
+                    const { sessionId: targetSession, limit } = args;
+                    if (!targetSession) return { content: [{ type: "text", text: "sessionId required" }], isError: true };
+                    const results = crossSessionSynthesis(userId, targetSession, limit || 5);
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        currentSession: targetSession,
+                        relatedSessions: results.length,
+                        results
+                    }) }] };
+                }
+                
                 case "suggest": {
                     // Get recent mood
                     const recentMood = db.prepare(`
@@ -1925,7 +2133,7 @@ export const memoryTool = {
                             db.prepare(`
                                 INSERT OR REPLACE INTO LongTermMemory 
                                 (id, userId, projectId, content, summary, response, intent, entities, priority, createdAt)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             `).run(
                                 mem.id, userId, mem.projectId, mem.content, mem.summary, mem.response,
                                 mem.intent, mem.entities, mem.priority, mem.createdAt
