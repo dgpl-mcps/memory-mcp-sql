@@ -319,6 +319,17 @@ export const initSqlite = () => {
         CREATE INDEX IF NOT EXISTS idx_entities_email ON Entities(email);
         CREATE INDEX IF NOT EXISTS idx_entities_perspective ON Entities(perspectiveOf);
 
+        -- Add nicknames column for existing DBs (safe idempotent ALTER)
+        -- We use a try/catch approach: ALTER TABLE will fail silently if column exists
+        -- This handles existing databases that were created before the nicknames column was added
+        try {
+            db.exec('ALTER TABLE Entities ADD COLUMN nicknames TEXT DEFAULT "[]"');
+        } catch (e: any) {
+            if (!e.message.includes('duplicate column name')) {
+                console.error('[init] Failed to add nicknames column:', e.message);
+            }
+        }
+
         CREATE TABLE IF NOT EXISTS Relations (
             id TEXT PRIMARY KEY,
             userId TEXT NOT NULL,
