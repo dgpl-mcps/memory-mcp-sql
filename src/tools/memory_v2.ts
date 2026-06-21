@@ -266,6 +266,150 @@ function getTopEntities(memories: any[]): { entity: string; count: number }[] {
         .map(([e, c]) => ({ entity: e, count: c }));
 }
 
+// =============================================
+// PROACTIVE INTENT MEMORY: Auto-retrieve related memories based on detected intent
+// =============================================
+function proactiveIntentRecall(userId: string, text: string, intent: string, entities: string[], limit: number = 5): any[] {
+    const intentQueries: Record<string, string[]> = {
+        error: ["error", "bug", "fail", "issue", "problem", "crash", "broken"],
+        success: ["success", "done", "completed", "fixed", "deployed", "working"],
+        learning: ["learned", "discovered", "realized", "understood", "figured"],
+        question: ["what", "why", "how", "when", "where", "who"],
+        planning: ["plan", "will", "going to", "should", "need to"],
+        command: ["create", "update", "delete", "fix", "start", "stop", "run"],
+    };
+    
+    const queries = intentQueries[intent] || [];
+    const results: any[] = [];
+    
+    // Search by intent + entities
+    if (entities.length > 0) {
+        const byEntity = db.prepare(`
+            SELECT id, content, summary, intent, entities, priority, createdAt
+            FROM LongTermMemory 
+            WHERE userId = ? AND entities LIKE ? AND intent = ?
+            ORDER BY priority DESC, createdAt DESC
+            LIMIT ?
+        `).all(userId, `%${entities[0]}%`, intent, limit) as any[];
+        byEntity.forEach(r => { if (!results.find(x => x.id === r.id)) results.push(r); });
+    }
+    
+    // Search by intent + keywords
+    if (results.length < limit) {
+        for (const q of queries.slice(0, 3)) {
+            const byKeyword = db.prepare(`
+                SELECT id, content, summary, intent, entities, priority, createdAt
+                FROM LongTermMemory 
+                WHERE userId = ? AND (content LIKE ? OR summary LIKE ?) AND intent = ?
+                ORDER BY priority DESC, createdAt DESC
+                LIMIT ?
+            `).all(userId, `%${q}%`, `%${q}%`, intent, limit - results.length) as any[];
+            byKeyword.forEach(r => { if (!results.find(x => x.id === r.id)) results.push(r); });
+        }
+    }
+    
+    return results.slice(0, limit).map(r => ({
+        id: r.id.slice(0, 15) + "...",
+        summary: r.summary || r.content?.slice(0, 60),
+        intent: r.intent,
+        entities: JSON.parse(r.entities || "[]"),
+        priority: Math.round((r.priority || 0.5) * 100) + "%",
+        time: r.createdAt
+    }));
+}
+
+// =============================================
+// GAM DUAL CONTEXT: Lightweight + Deep context retrieval
+// =============================================
+function getLightContext(userId: string, limit: number = 5): any {
+    // Get recent high-priority memories (lightweight)
+    const highlights = db.prepare(`
+        SELECT id, content, summary, intent, priority, createdAt
+        FROM LongTermMemory 
+        WHERE userId = ? AND priority >= 0.6
+        ORDER BY priority DESC, createdAt DESC
+        LIMIT ?
+    `).all(userId, limit) as any[];
+    
+    // Get recent errors that need attention
+    const recentErrors = db.prepare(`
+        SELECT id, content, summary, createdAt
+        FROM LongTermMemory 
+        WHERE userId = ? AND intent = 'error' AND createdAt > datetime('now', '-24 hours')
+        ORDER BY createdAt DESC
+        LIMIT 3
+    `).all(userId) as any[];
+    
+    // Get recent successes
+    const recentSuccesses = db.prepare(`
+        SELECT id, content, summary, createdAt
+        FROM LongTermMemory 
+        WHERE userId = ? AND intent = 'success' AND createdAt > datetime('now', '-24 hours')
+        ORDER BY createdAt DESC
+        LIMIT 3
+    `).all(userId) as any[];
+    
+    return {
+        highlights: highlights.map(h => ({
+            id: h.id.slice(0, 15) + "...",
+            summary: h.summary || h.content?.slice(0, 60),
+            priority: Math.round((h.priority || 0.5) * 100) + "%"
+        })),
+        recentErrors: recentErrors.map(e => ({
+            summary: e.summary || e.content?.slice(0, 60),
+            time: e.createdAt
+        })),
+        recentSuccesses: recentSuccesses.map(s => ({
+            summary: s.summary || s.content?.slice(0, 60),
+            time: s.createdAt
+        })),
+        totalHighlights: highlights.length,
+        totalErrors: recentErrors.length,
+        totalSuccesses: recentSuccesses.length
+    };
+}
+
+// =============================================
+// O-MEM ACTIVE USER PROFILING: Auto-update persona on every interaction
+// =============================================
+function updateUserProfile(userId: string, text: string, intent: string): void {
+    // Extract communication patterns
+    const wordCount = text.split(/\s+/).length;
+    const hasQuestions = /[?]/.test(text);
+    const hasCommands = /^(create|update|delete|fix|start|stop|run|execute|build|make|get|set|show|display)/i.test(text);
+    const hasEmoji = /[\u{1F300}-\u{1F9FF}]/u.test(text);
+    const isUrgent = /urgent|critical|asap|immediately|hurry|fast|quick/i.test(text);
+    
+    // Get or create user profile
+    let profile = db.prepare(`SELECT * FROM UserProfiles WHERE userId = ?`).get(userId) as any;
+    
+    if (!profile) {
+        // Create new profile
+        db.prepare(`
+            INSERT INTO UserProfiles (userId, interactionCount, preferredIntent, avgMessageLength, hasQuestions, hasCommands, hasEmoji, isUrgent, lastActiveAt)
+            VALUES (?, 1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `).run(userId, intent, wordCount, hasQuestions ? 1 : 0, hasCommands ? 1 : 0, hasEmoji ? 1 : 0, isUrgent ? 1 : 0);
+    } else {
+        // Update existing profile
+        const newCount = (profile.interactionCount || 0) + 1;
+        const avgLen = ((profile.avgMessageLength || 0) * (profile.interactionCount || 0) + wordCount) / newCount;
+        
+        db.prepare(`
+            UPDATE UserProfiles SET
+                interactionCount = ?,
+                preferredIntent = ?,
+                avgMessageLength = ?,
+                hasQuestions = MAX(?, hasQuestions),
+                hasCommands = MAX(?, hasCommands),
+                hasEmoji = MAX(?, hasEmoji),
+                isUrgent = MAX(?, isUrgent),
+                lastActiveAt = CURRENT_TIMESTAMP
+            WHERE userId = ?
+        `).run(newCount, intent, avgLen, hasQuestions ? 1 : 0, hasCommands ? 1 : 0, hasEmoji ? 1 : 0, isUrgent ? 1 : 0, userId);
+    }
+}
+
+
 // Cross-session synthesis: find related memories across different sessions
 function crossSessionSynthesis(userId: string, currentSessionId: string, limit: number = 5): any[] {
     const currentSession = db.prepare(`
@@ -371,7 +515,7 @@ export const memoryTool = {
     inputSchema: {
         type: "object",
         properties: {
-            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search", "contact", "contact_graph", "temporal", "synthesize"] },
+            op: { type: "string", enum: ["remember", "recall", "history", "context", "stats", "cleanup", "boost", "pin", "inspect", "export", "import", "insights", "trim", "analytics", "link", "all", "recent", "search", "semantic", "thread", "health", "decay", "persona", "mood", "learn", "remind", "suggest", "graph", "dedup", "backup", "restore", "importance", "snippet_search", "contact", "contact_graph", "temporal", "synthesize", "proactive", "light_context", "profile"] },
             userId: { type: "string", description: "User identifier (required)" },
             projectId: { type: "string", description: "Project context" },
             sessionId: { type: "string", description: "Conversation thread" },
@@ -1794,6 +1938,57 @@ export const memoryTool = {
                         currentSession: targetSession,
                         relatedSessions: results.length,
                         results
+                    }) }] };
+                }
+                
+                // =============================================
+                // PROACTIVE: Proactive intent-driven memory recall
+                // =============================================
+                case "proactive": {
+                    const { text, intent: detectedIntent, entities } = args;
+                    if (!text) return { content: [{ type: "text", text: "text required" }], isError: true };
+                    const detIntent = detectedIntent || detectIntent(text);
+                    const detEntities = entities || extractEntities(text);
+                    const results = proactiveIntentRecall(userId, text, detIntent, detEntities, args.limit || 5);
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        intent: detIntent,
+                        entities: detEntities,
+                        count: results.length,
+                        results
+                    }) }] };
+                }
+                
+                // =============================================
+                // LIGHT_CONTEXT: GAM-style lightweight context
+                // =============================================
+                case "light_context": {
+                    const result = getLightContext(userId, args.limit || 5);
+                    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+                }
+                
+                // =============================================
+                // PROFILE: O-Mem active user profiling
+                // =============================================
+                case "profile": {
+                    const { text, intent: profIntent } = args;
+                    if (text) {
+                        // Update profile
+                        updateUserProfile(userId, text, profIntent || detectIntent(text));
+                    }
+                    // Get current profile
+                    const profile = db.prepare(`SELECT * FROM UserProfiles WHERE userId = ?`).get(userId) as any;
+                    if (!profile) {
+                        return { content: [{ type: "text", text: JSON.stringify({ message: "No profile yet. Send text to build one." }) }] };
+                    }
+                    return { content: [{ type: "text", text: JSON.stringify({
+                        interactionCount: profile.interactionCount,
+                        preferredIntent: profile.preferredIntent,
+                        avgMessageLength: Math.round(profile.avgMessageLength || 0),
+                        hasQuestions: !!profile.hasQuestions,
+                        hasCommands: !!profile.hasCommands,
+                        hasEmoji: !!profile.hasEmoji,
+                        isUrgent: !!profile.isUrgent,
+                        lastActiveAt: profile.lastActiveAt
                     }) }] };
                 }
                 

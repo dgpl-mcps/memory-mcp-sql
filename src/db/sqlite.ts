@@ -592,6 +592,19 @@ export const initSqlite = () => {
         CREATE INDEX IF NOT EXISTS idx_reminders_status ON MemoryReminders(status);
         CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON MemoryReminders(triggerCondition);
 
+        CREATE TABLE IF NOT EXISTS UserProfiles (
+            userId TEXT PRIMARY KEY,
+            interactionCount INTEGER DEFAULT 0,
+            preferredIntent TEXT DEFAULT 'general',
+            avgMessageLength REAL DEFAULT 0,
+            hasQuestions INTEGER DEFAULT 0,
+            hasCommands INTEGER DEFAULT 0,
+            hasEmoji INTEGER DEFAULT 0,
+            isUrgent INTEGER DEFAULT 0,
+            isHindi INTEGER DEFAULT 0,
+            lastActiveAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
         -- Conversation Memory (for summary compression with raw fallback)
         CREATE TABLE IF NOT EXISTS ConversationMemory (
             id TEXT PRIMARY KEY,
